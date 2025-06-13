@@ -14,9 +14,13 @@ import { auth } from './firebase/firebaseConfig';
 import { Stack } from 'expo-router';
 import { getDoc, doc } from 'firebase/firestore';
 import { db } from './firebase/firebaseConfig'; 
+import { useAuth } from './context/authContext'; // Adjust path as needed
+
 
 
 export default function LoginScreen() {
+  const { setUsername: setGlobalUsername, setRole: setGlobalRole } = useAuth();
+
   const [email, setEmail] = useState<string>('');
   const [password, setPassword] = useState<string>('');
   const [loading, setLoading] = useState<boolean>(false);
@@ -44,13 +48,29 @@ export default function LoginScreen() {
     const userCredential = await signInWithEmailAndPassword(auth, email, password);
     const user = userCredential.user;
 
-    // Fetch username from Firestore
+    // Fetch user data (username and role)
     const userDoc = await getDoc(doc(db, 'users', user.uid));
-    const username = userDoc.exists() ? userDoc.data().username : 'User';
+    if (!userDoc.exists()) {
+      throw new Error('User profile not found in Firestore');
+    }
 
-    Alert.alert('Success', `Welcome back, ${username}!`, [
-      { text: 'OK', onPress: () => router.push('/bidderHome') }
-    ]);
+    const userData = userDoc.data();
+    const username = userData.username || 'User';
+    const role = userData.role || 'bidder';
+
+    // Set globally
+    setGlobalUsername(username);
+    setGlobalRole(role);
+
+    // Navigate directly based on role
+    if (role === 'admin') {
+      router.push('/adminPanel' as any);
+    } else if (role === 'auctioneer') {
+      router.push('/auctioneerHome' as any);
+    } else {
+      router.push('/bidderHome' as any);
+    }
+
   } catch (error: any) {
     console.error('Login error:', error);
     let errorMessage = 'An error occurred during login';
@@ -80,7 +100,6 @@ export default function LoginScreen() {
     setLoading(false);
   }
 };
-
 
   return (
     <>

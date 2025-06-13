@@ -1,6 +1,13 @@
 import { Stack } from "expo-router";
+import { AuthProvider } from './context/authContext';
 
 export default function RootLayout() {
-  return <Stack />;
+  
+  return (
+    <AuthProvider>
+      <Stack />;
+    </AuthProvider>
+    
+  );
   
 }
