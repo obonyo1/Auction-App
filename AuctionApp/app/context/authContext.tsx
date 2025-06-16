@@ -7,13 +7,14 @@ interface AuthContextType {
   setRole: (role: string) => void;
 }
 
-const AuthContext = createContext<AuthContextType | undefined>(undefined);
+// Create context with null instead of undefined, and proper typing
+const AuthContext = createContext<AuthContextType | null>(null);
 
 export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  const [username, setUsername] = useState('');
-  const [role, setRole] = useState('');
+  const [username, setUsername] = useState<string>('');
+  const [role, setRole] = useState<string>('');
 
-  const value = {
+  const value: AuthContextType = {
     username,
     setUsername,
     role,
@@ -27,9 +28,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   );
 };
 
-export const useAuth = () => {
+export const useAuth = (): AuthContextType => {
   const context = useContext(AuthContext);
-  if (context === undefined) {
+  if (context === null) {
     throw new Error('useAuth must be used within an AuthProvider');
   }
   return context;

@@ -1,16 +1,369 @@
-import { View, Image, Button } from 'react-native';
+import React, { useState, useEffect } from 'react';
+import { 
+  View, 
+  Text, 
+  TouchableOpacity, 
+  StyleSheet, 
+  FlatList, 
+  Alert,
+  RefreshControl,
+  ActivityIndicator
+} from 'react-native';
 import { useRouter } from 'expo-router';
 import { Stack } from 'expo-router';
-export default function auctioneerHome() {
+import { useAuth } from './context/authContext'; // Adjust path as needed
+import { 
+  collection, 
+  query, 
+  where, 
+  orderBy, 
+  getDocs, 
+  limit 
+} from 'firebase/firestore';
+import { db } from './firebase/firebaseConfig'; // Adjust path as needed
+import { signOut } from 'firebase/auth';
+import { auth } from './firebase/firebaseConfig';
+
+interface AuctionItem {
+  id: string;
+  productName: string;
+  description: string;
+  finalPrice: number;
+  status: 'active' | 'completed' | 'upcoming';
+  endTime: Date;
+  createdAt: Date;
+}
+
+export default function AuctioneerHome() {
   const router = useRouter();
+  const { username } = useAuth();
+  const [previousAuctions, setPreviousAuctions] = useState<AuctionItem[]>([]);
+  const [loading, setLoading] = useState<boolean>(true);
+  const [refreshing, setRefreshing] = useState<boolean>(false);
+
+  const fetchPreviousAuctions = async () => {
+    try {
+      const currentUser = auth.currentUser;
+      if (!currentUser) return;
+
+      const auctionsRef = collection(db, 'auctions');
+      const q = query(
+        auctionsRef,
+        where('auctioneerId', '==', currentUser.uid),
+        where('status', '==', 'completed'),
+        orderBy('endTime', 'desc'),
+        limit(10)
+      );
+
+      const querySnapshot = await getDocs(q);
+      const auctions: AuctionItem[] = [];
+
+      querySnapshot.forEach((doc) => {
+        const data = doc.data();
+        auctions.push({
+          id: doc.id,
+          productName: data.productName || 'Unknown Product',
+          description: data.description || '',
+          finalPrice: data.finalPrice || 0,
+          status: data.status,
+          endTime: data.endTime?.toDate() || new Date(),
+          createdAt: data.createdAt?.toDate() || new Date(),
+        });
+      });
+
+      setPreviousAuctions(auctions);
+    } catch (error) {
+      console.error('Error fetching auctions:', error);
+      Alert.alert('Error', 'Failed to load previous auctions');
+    } finally {
+      setLoading(false);
+      setRefreshing(false);
+    }
+  };
+
+  useEffect(() => {
+    fetchPreviousAuctions();
+  }, []);
+
+  const onRefresh = () => {
+    setRefreshing(true);
+    fetchPreviousAuctions();
+  };
+
+  const handleLogout = async () => {
+    Alert.alert(
+      'Logout',
+      'Are you sure you want to logout?',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Logout',
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              await signOut(auth);
+              router.replace('/login');
+            } catch (error) {
+              console.error('Logout error:', error);
+              Alert.alert('Error', 'Failed to logout');
+            }
+          }
+        }
+      ]
+    );
+  };
+
+  const renderAuctionItem = ({ item }: { item: AuctionItem }) => (
+    <TouchableOpacity 
+      style={styles.auctionItem}
+      onPress={() => {
+        // Navigate to auction details
+        router.push(`/auctionDetails/${item.id}` as any);
+      }}
+    >
+      <View style={styles.auctionContent}>
+        <Text style={styles.productName}>{item.productName}</Text>
+        <Text style={styles.productDescription} numberOfLines={2}>
+          {item.description}
+        </Text>
+      </View>
+      <View style={styles.priceContainer}>
+        <Text style={styles.priceLabel}>PRICE</Text>
+        <Text style={styles.price}>${item.finalPrice}</Text>
+      </View>
+    </TouchableOpacity>
+  );
+
+  if (loading) {
+    return (
+      <>
+        <Stack.Screen options={{ headerShown: false }} />
+        <View style={styles.loadingContainer}>
+          <ActivityIndicator size="large" color="#007bff" />
+          <Text style={styles.loadingText}>Loading your auctions...</Text>
+        </View>
+      </>
+    );
+  }
 
   return (
     <>
-    <Stack.Screen options={{ headerShown: false }} />
-    <View style={{ flex: 1, backgroundColor: 'blue', alignItems: 'center', justifyContent: 'center' }}>
+      <Stack.Screen options={{ headerShown: false }} />
+      <View style={styles.container}>
+        {/* Header */}
+        <View style={styles.header}>
+          <TouchableOpacity 
+            style={styles.helpButton}
+            onPress={() => {
+              Alert.alert('Help', 'Contact support for assistance');
+            }}
+          >
+            <Text style={styles.helpButtonText}>?</Text>
+          </TouchableOpacity>
+          
+          <TouchableOpacity 
+            style={styles.menuButton}
+            onPress={handleLogout}
+          >
+            <View style={styles.menuIcon}>
+              <View style={styles.menuLine} />
+              <View style={styles.menuLine} />
+              <View style={styles.menuLine} />
+            </View>
+          </TouchableOpacity>
+        </View>
 
+        {/* Welcome Section */}
+        <View style={styles.welcomeSection}>
+          <Text style={styles.welcomeTitle}>Welcome</Text>
+          <Text style={styles.welcomeUsername}>{username || 'Auctioneer'}</Text>
+        </View>
 
-    </View>
+        {/* Divider */}
+        <View style={styles.divider} />
+
+        {/* Place Item Button */}
+        <TouchableOpacity 
+          style={styles.placeItemButton}
+          onPress={() => router.push('/createAuction' as any)}
+        >
+          <Text style={styles.placeItemButtonText}>Place item up for auction</Text>
+        </TouchableOpacity>
+
+        {/* Previous Auctions Section */}
+        <View style={styles.previousAuctionsSection}>
+          <Text style={styles.sectionTitle}>Previous Auctions</Text>
+          
+          {previousAuctions.length === 0 ? (
+            <View style={styles.emptyState}>
+              <Text style={styles.emptyStateText}>
+                No previous auctions found. Create your first auction!
+              </Text>
+            </View>
+          ) : (
+            <FlatList
+              data={previousAuctions}
+              renderItem={renderAuctionItem}
+              keyExtractor={(item) => item.id}
+              refreshControl={
+                <RefreshControl
+                  refreshing={refreshing}
+                  onRefresh={onRefresh}
+                  colors={['#007bff']}
+                />
+              }
+              showsVerticalScrollIndicator={false}
+              contentContainerStyle={styles.listContainer}
+            />
+          )}
+        </View>
+      </View>
     </>
   );
 }
+
+const styles = StyleSheet.create({
+  container: {
+    flex: 1,
+    backgroundColor: '#fff',
+    paddingTop: 50, // Account for status bar
+  },
+  loadingContainer: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    backgroundColor: '#fff',
+  },
+  loadingText: {
+    marginTop: 10,
+    fontSize: 16,
+    color: '#666',
+  },
+  header: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingHorizontal: 20,
+    paddingVertical: 10,
+  },
+  helpButton: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: '#6c757d',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  helpButtonText: {
+    color: '#fff',
+    fontSize: 18,
+    fontWeight: 'bold',
+  },
+  menuButton: {
+    padding: 10,
+  },
+  menuIcon: {
+    width: 24,
+    height: 24,
+    justifyContent: 'space-between',
+  },
+  menuLine: {
+    height: 3,
+    backgroundColor: '#333',
+    borderRadius: 2,
+  },
+  welcomeSection: {
+    alignItems: 'center',
+    paddingVertical: 20,
+  },
+  welcomeTitle: {
+    fontSize: 32,
+    fontWeight: 'bold',
+    color: '#333',
+    marginBottom: 5,
+  },
+  welcomeUsername: {
+    fontSize: 24,
+    fontStyle: 'italic',
+    color: '#666',
+  },
+  divider: {
+    height: 1,
+    backgroundColor: '#e0e0e0',
+    marginHorizontal: 20,
+    marginVertical: 10,
+  },
+  placeItemButton: {
+    backgroundColor: '#6c757d',
+    paddingVertical: 15,
+    paddingHorizontal: 30,
+    marginHorizontal: 20,
+    marginVertical: 20,
+    borderRadius: 8,
+    alignItems: 'center',
+  },
+  placeItemButtonText: {
+    color: '#fff',
+    fontSize: 16,
+    fontWeight: '600',
+  },
+  previousAuctionsSection: {
+    flex: 1,
+    paddingHorizontal: 20,
+  },
+  sectionTitle: {
+    fontSize: 24,
+    fontWeight: 'bold',
+    color: '#333',
+    marginBottom: 20,
+  },
+  listContainer: {
+    paddingBottom: 20,
+  },
+  auctionItem: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingVertical: 15,
+    borderBottomWidth: 1,
+    borderBottomColor: '#f0f0f0',
+  },
+  auctionContent: {
+    flex: 1,
+    paddingRight: 15,
+  },
+  productName: {
+    fontSize: 16,
+    fontWeight: 'bold',
+    color: '#333',
+    marginBottom: 5,
+  },
+  productDescription: {
+    fontSize: 14,
+    color: '#666',
+    lineHeight: 20,
+  },
+  priceContainer: {
+    alignItems: 'flex-end',
+  },
+  priceLabel: {
+    fontSize: 12,
+    color: '#999',
+    marginBottom: 2,
+  },
+  price: {
+    fontSize: 18,
+    fontWeight: 'bold',
+    color: '#333',
+  },
+  emptyState: {
+    alignItems: 'center',
+    paddingVertical: 40,
+  },
+  emptyStateText: {
+    fontSize: 16,
+    color: '#666',
+    textAlign: 'center',
+    lineHeight: 24,
+  },
+});

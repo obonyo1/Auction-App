@@ -12,9 +12,13 @@ import { signInWithEmailAndPassword } from 'firebase/auth';
 import { router } from 'expo-router';
 import { auth } from './firebase/firebaseConfig';
 import { Stack } from 'expo-router';
-import { getDoc, doc } from 'firebase/firestore';
+import { setDoc, getDoc, doc } from 'firebase/firestore';
 import { db } from './firebase/firebaseConfig'; 
-import { useAuth } from './context/authContext'; // Adjust path as needed
+import { useAuth } from './context/authContext'; 
+import { 
+  sendEmailVerification, 
+  signOut 
+} from 'firebase/auth';
 
 
 
@@ -40,13 +44,46 @@ export default function LoginScreen() {
     return true;
   };
 
-  const handleLogin = async (): Promise<void> => {
+ const handleLogin = async (): Promise<void> => {
   if (!validateInputs()) return;
 
   setLoading(true);
   try {
     const userCredential = await signInWithEmailAndPassword(auth, email, password);
     const user = userCredential.user;
+
+    // Check if email is verified
+    if (!user.emailVerified) {
+      // Sign out the user
+      await signOut(auth);
+      
+      Alert.alert(
+        'Email Not Verified',
+        'Please verify your email address before logging in. Check your email for the verification link.',
+        [
+          {
+            text: 'Resend Verification Email',
+            onPress: async () => {
+              try {
+                // Re-authenticate to send verification email
+                const tempCredential = await signInWithEmailAndPassword(auth, email, password);
+                await sendEmailVerification(tempCredential.user);
+                await signOut(auth);
+                Alert.alert('Verification Email Sent', 'Please check your email for the verification link.');
+              } catch (error) {
+                console.error('Error resending verification:', error);
+                Alert.alert('Error', 'Failed to resend verification email.');
+              }
+            }
+          },
+          {
+            text: 'OK',
+            style: 'default'
+          }
+        ]
+      );
+      return;
+    }
 
     // Fetch user data (username and role)
     const userDoc = await getDoc(doc(db, 'users', user.uid));
@@ -57,6 +94,14 @@ export default function LoginScreen() {
     const userData = userDoc.data();
     const username = userData.username || 'User';
     const role = userData.role || 'bidder';
+
+    // Update verification status in Firestore if needed
+    if (!userData.emailVerified) {
+      await setDoc(doc(db, 'users', user.uid), {
+        ...userData,
+        emailVerified: true
+      }, { merge: true });
+    }
 
     // Set globally
     setGlobalUsername(username);
@@ -99,8 +144,7 @@ export default function LoginScreen() {
   } finally {
     setLoading(false);
   }
-};
-
+}
   return (
     <>
       <Stack.Screen options={{ headerShown: false }} />
@@ -145,7 +189,7 @@ export default function LoginScreen() {
           style={styles.forgotPasswordLink}
           onPress={() => {
             // You can implement forgot password functionality here
-            Alert.alert('Info', 'Forgot password functionality coming soon');
+           router.push('/forgotPassword')
           }}
         >
           <Text style={styles.forgotPasswordText}>
