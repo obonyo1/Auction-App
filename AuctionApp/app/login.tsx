@@ -19,8 +19,7 @@ import {
   sendEmailVerification, 
   signOut 
 } from 'firebase/auth';
-
-
+import { Ionicons } from '@expo/vector-icons';
 
 export default function LoginScreen() {
   const { setUsername: setGlobalUsername, setRole: setGlobalRole } = useAuth();
@@ -28,6 +27,7 @@ export default function LoginScreen() {
   const [email, setEmail] = useState<string>('');
   const [password, setPassword] = useState<string>('');
   const [loading, setLoading] = useState<boolean>(false);
+  const [showPassword, setShowPassword] = useState<boolean>(false);
 
   const validateInputs = (): boolean => {
     if (!email || !password) {
@@ -145,6 +145,7 @@ export default function LoginScreen() {
     setLoading(false);
   }
 }
+
   return (
     <>
       <Stack.Screen options={{ headerShown: false }} />
@@ -161,14 +162,26 @@ export default function LoginScreen() {
           autoComplete="email"
         />
         
-        <TextInput
-          style={styles.input}
-          placeholder="Password"
-          value={password}
-          onChangeText={setPassword}
-          secureTextEntry
-          autoComplete="password"
-        />
+        <View style={styles.passwordContainer}>
+          <TextInput
+            style={styles.passwordInput}
+            placeholder="Password"
+            value={password}
+            onChangeText={setPassword}
+            secureTextEntry={!showPassword}
+            autoComplete="password"
+          />
+          <TouchableOpacity 
+            style={styles.eyeButton}
+            onPress={() => setShowPassword(!showPassword)}
+          >
+            <Ionicons 
+              name={showPassword ? 'eye-off' : 'eye'} 
+              size={24} 
+              color="#666" 
+            />
+          </TouchableOpacity>
+        </View>
         
         <Button 
           title={loading ? "Signing In..." : "Login"} 
@@ -223,6 +236,23 @@ const styles = StyleSheet.create({
     borderRadius: 8,
     fontSize: 16,
     backgroundColor: '#f9f9f9',
+  },
+  passwordContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: '#ddd',
+    borderRadius: 8,
+    backgroundColor: '#f9f9f9',
+    marginBottom: 15,
+  },
+  passwordInput: {
+    flex: 1,
+    padding: 15,
+    fontSize: 16,
+  },
+  eyeButton: {
+    padding: 15,
   },
   signupLink: {
     marginTop: 20,
