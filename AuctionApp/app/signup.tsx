@@ -107,10 +107,7 @@ export default function SignupScreen() {
       });
 
       // Send email verification
-      await sendEmailVerification(user, {
-        url: 'https://your-app.com/login', // Deep link back to your app
-        handleCodeInApp: false // This ensures email link verification
-      });
+      await sendEmailVerification(user);
 
       // Sign out the user until they verify their email
       await signOut(auth);

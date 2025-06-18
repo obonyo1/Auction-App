@@ -1,6 +1,9 @@
 import { initializeApp } from 'firebase/app';
 import { getAuth } from 'firebase/auth';
 import { getFirestore } from 'firebase/firestore';
+import { getDatabase } from 'firebase/database'; // Add this
+import { getStorage } from 'firebase/storage'; // Add this
+
 
 const firebaseConfig = {
   apiKey: "AIzaSyDeZi3b1JxunUBFb5njndMKtYlUFrPfIJM",
@@ -32,6 +35,8 @@ try {
 
 // Initialize Firestore
 const db = getFirestore(app);
+export const rtdb = getDatabase(app); // Real-time database
+export const storage = getStorage(app); // For image uploads
 
 export { auth, db };
 export default auth;
