@@ -15,10 +15,10 @@ import {
 } from 'react-native';
 import { useRouter } from 'expo-router';
 import { Stack } from 'expo-router';
-import { useAuth } from './context/authContext'; // Adjust path as needed
+import { useAuth } from './context/authContext';
 
 const { width } = Dimensions.get('window');
-const cardWidth = (width - 60) / 2; // Account for padding and margin
+const cardWidth = (width - 60) / 2; 
 import { 
   collection, 
   query, 
@@ -27,7 +27,7 @@ import {
   getDocs, 
   limit 
 } from 'firebase/firestore';
-import { db } from './firebase/firebaseConfig'; // Adjust path as needed
+import { db } from './firebase/firebaseConfig';
 import { signOut } from 'firebase/auth';
 import { auth } from './firebase/firebaseConfig';
 
@@ -142,7 +142,7 @@ export default function AuctioneerHome() {
           text: 'Delete',
           style: 'destructive',
           onPress: () => {
-            // Implement delete account logic here
+            //delete account here
             Alert.alert('Info', 'Delete account functionality needs to be implemented');
           }
         }
