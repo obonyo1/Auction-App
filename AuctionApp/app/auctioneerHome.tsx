@@ -13,81 +13,125 @@ import { useRouter } from 'expo-router';
 import { Stack } from 'expo-router';
 import { useAuth } from './context/authContext'; // Adjust path as needed
 import { 
-  collection, 
+  getDatabase, 
+  ref, 
+  onValue, 
   query, 
-  where, 
-  orderBy, 
-  getDocs, 
-  limit 
-} from 'firebase/firestore';
-import { db } from './firebase/firebaseConfig'; // Adjust path as needed
+  orderByChild, 
+  equalTo,
+  off 
+} from 'firebase/database';
 import { signOut } from 'firebase/auth';
 import { auth } from './firebase/firebaseConfig';
 
 interface AuctionItem {
   id: string;
-  productName: string;
+  title: string;
   description: string;
-  finalPrice: number;
+  startingBid: number;
+  currentBid: number;
   status: 'active' | 'completed' | 'upcoming';
-  endTime: Date;
-  createdAt: Date;
+  endTime: number;
+  createdAt: number;
+  auctioneerId: string;
+  images?: string;
 }
 
 export default function AuctioneerHome() {
   const router = useRouter();
   const { username } = useAuth();
-  const [previousAuctions, setPreviousAuctions] = useState<AuctionItem[]>([]);
+  const [myAuctions, setMyAuctions] = useState<AuctionItem[]>([]);
   const [loading, setLoading] = useState<boolean>(true);
   const [refreshing, setRefreshing] = useState<boolean>(false);
 
-  const fetchPreviousAuctions = async () => {
+  const fetchMyAuctions = async () => {
     try {
       const currentUser = auth.currentUser;
-      if (!currentUser) return;
+      if (!currentUser) {
+        setLoading(false);
+        return;
+      }
 
-      const auctionsRef = collection(db, 'auctions');
-      const q = query(
+      const db = getDatabase();
+      const auctionsRef = ref(db, 'auctions');
+
+      // Set up real-time listener for auctions by current user
+      const unsubscribe = onValue(
         auctionsRef,
-        where('auctioneerId', '==', currentUser.uid),
-        where('status', '==', 'completed'),
-        orderBy('endTime', 'desc'),
-        limit(10)
+        (snapshot) => {
+          const loadedAuctions: AuctionItem[] = [];
+          
+          if (snapshot.exists()) {
+            const data = snapshot.val();
+            
+            // Filter auctions by current user and convert to array
+            Object.keys(data).forEach((key) => {
+              const auction = data[key];
+              
+              // Only include auctions created by current user
+              if (auction.auctioneerId === currentUser.uid) {
+                loadedAuctions.push({
+                  id: key,
+                  title: auction.title || 'Unknown Product',
+                  description: auction.description || 'No description',
+                  startingBid: auction.startPrice || 0,
+                  currentBid: auction.currentBid || auction.startPrice || 0,
+                  status: auction.status || 'active',
+                  endTime: auction.endTime || Date.now(),
+                  createdAt: auction.createdAt || Date.now(),
+                  auctioneerId: auction.auctioneerId,
+                  images: auction.imageUrl || ''
+                });
+              }
+            });
+            
+            // Sort by creation time (newest first)
+            loadedAuctions.sort((a, b) => b.createdAt - a.createdAt);
+          }
+          
+          setMyAuctions(loadedAuctions);
+          setLoading(false);
+          setRefreshing(false);
+          console.log('My auctions fetched:', loadedAuctions.length);
+        },
+        (error) => {
+          console.error('Realtime Database error:', error);
+          Alert.alert('Error', 'Failed to load your auctions');
+          setLoading(false);
+          setRefreshing(false);
+        }
       );
 
-      const querySnapshot = await getDocs(q);
-      const auctions: AuctionItem[] = [];
-
-      querySnapshot.forEach((doc) => {
-        const data = doc.data();
-        auctions.push({
-          id: doc.id,
-          productName: data.productName || 'Unknown Product',
-          description: data.description || '',
-          finalPrice: data.finalPrice || 0,
-          status: data.status,
-          endTime: data.endTime?.toDate() || new Date(),
-          createdAt: data.createdAt?.toDate() || new Date(),
-        });
-      });
-
-      setPreviousAuctions(auctions);
+      // Store unsubscribe function for cleanup
+      return unsubscribe;
     } catch (error) {
-      console.error('Error fetching auctions:', error);
-      Alert.alert('Error', 'Failed to load previous auctions');
-    } finally {
+      console.error('Error setting up auction listener:', error);
+      Alert.alert('Error', 'Failed to load auctions');
       setLoading(false);
       setRefreshing(false);
     }
   };
 
   useEffect(() => {
-    fetchPreviousAuctions();
+    let unsubscribe: (() => void) | undefined;
+    
+    const setupListener = async () => {
+      unsubscribe = await fetchMyAuctions();
+    };
+    
+    setupListener();
+
+    // Cleanup function
+    return () => {
+      if (unsubscribe) {
+        unsubscribe();
+      }
+    };
   }, []);
 
   const onRefresh = () => {
     setRefreshing(true);
-    fetchPreviousAuctions();
+    fetchMyAuctions();
   };
 
   const handleLogout = async () => {
@@ -113,6 +157,51 @@ export default function AuctioneerHome() {
     );
   };
 
+  const getStatusColor = (status: string) => {
+    switch (status) {
+      case 'active':
+        return '#28a745';
+      case 'completed':
+        return '#6c757d';
+      case 'upcoming':
+        return '#ffc107';
+      default:
+        return '#6c757d';
+    }
+  };
+
+  const getStatusText = (status: string) => {
+    switch (status) {
+      case 'active':
+        return 'ACTIVE';
+      case 'completed':
+        return 'ENDED';
+      case 'upcoming':
+        return 'UPCOMING';
+      default:
+        return status.toUpperCase();
+    }
+  };
+
+  const formatTimeLeft = (endTime: number) => {
+    const now = Date.now();
+    const timeLeft = endTime - now;
+    
+    if (timeLeft <= 0) return 'Ended';
+    
+    const days = Math.floor(timeLeft / (1000 * 60 * 60 * 24));
+    const hours = Math.floor((timeLeft % (1000 * 60 * 60 * 24)) / (1000 * 60 * 60));
+    const minutes = Math.floor((timeLeft % (1000 * 60 * 60)) / (1000 * 60));
+    
+    if (days > 0) {
+      return `${days}d ${hours}h left`;
+    }
+    if (hours > 0) {
+      return `${hours}h ${minutes}m left`;
+    }
+    return `${minutes}m left`;
+  };
+
   const renderAuctionItem = ({ item }: { item: AuctionItem }) => (
     <TouchableOpacity 
       style={styles.auctionItem}
@@ -122,14 +211,23 @@ export default function AuctioneerHome() {
       }}
     >
       <View style={styles.auctionContent}>
-        <Text style={styles.productName}>{item.productName}</Text>
+        <View style={styles.productHeader}>
+          <Text style={styles.productName}>{item.title}</Text>
+          <View style={[styles.statusBadge, { backgroundColor: getStatusColor(item.status) }]}>
+            <Text style={styles.statusText}>{getStatusText(item.status)}</Text>
+          </View>
+        </View>
         <Text style={styles.productDescription} numberOfLines={2}>
           {item.description}
         </Text>
+        <Text style={styles.timeLeft}>
+          {formatTimeLeft(item.endTime)}
+        </Text>
       </View>
       <View style={styles.priceContainer}>
-        <Text style={styles.priceLabel}>PRICE</Text>
-        <Text style={styles.price}>${item.finalPrice}</Text>
+        <Text style={styles.priceLabel}>CURRENT BID</Text>
+        <Text style={styles.price}>Ksh {item.currentBid.toLocaleString()}</Text>
+        <Text style={styles.startPrice}>Start: Ksh {item.startingBid.toLocaleString()}</Text>
       </View>
     </TouchableOpacity>
   );
@@ -190,19 +288,19 @@ export default function AuctioneerHome() {
           <Text style={styles.placeItemButtonText}>Place item up for auction</Text>
         </TouchableOpacity>
 
-        {/* Previous Auctions Section */}
+        {/* My Auctions Section */}
         <View style={styles.previousAuctionsSection}>
-          <Text style={styles.sectionTitle}>Previous Auctions</Text>
+          <Text style={styles.sectionTitle}>My Auctions</Text>
           
-          {previousAuctions.length === 0 ? (
+          {myAuctions.length === 0 ? (
             <View style={styles.emptyState}>
               <Text style={styles.emptyStateText}>
-                No previous auctions found. Create your first auction!
+                No auctions found. Create your first auction!
               </Text>
             </View>
           ) : (
             <FlatList
-              data={previousAuctions}
+              data={myAuctions}
               renderItem={renderAuctionItem}
               keyExtractor={(item) => item.id}
               refreshControl={
@@ -323,7 +421,7 @@ const styles = StyleSheet.create({
   auctionItem: {
     flexDirection: 'row',
     justifyContent: 'space-between',
-    alignItems: 'center',
+    alignItems: 'flex-start',
     paddingVertical: 15,
     borderBottomWidth: 1,
     borderBottomColor: '#f0f0f0',
@@ -332,16 +430,39 @@ const styles = StyleSheet.create({
     flex: 1,
     paddingRight: 15,
   },
+  productHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 5,
+  },
   productName: {
     fontSize: 16,
     fontWeight: 'bold',
     color: '#333',
-    marginBottom: 5,
+    flex: 1,
+  },
+  statusBadge: {
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 12,
+    marginLeft: 10,
+  },
+  statusText: {
+    color: '#fff',
+    fontSize: 10,
+    fontWeight: 'bold',
   },
   productDescription: {
     fontSize: 14,
     color: '#666',
     lineHeight: 20,
+    marginBottom: 5,
+  },
+  timeLeft: {
+    fontSize: 12,
+    color: '#ff6b35',
+    fontWeight: '600',
   },
   priceContainer: {
     alignItems: 'flex-end',
@@ -354,7 +475,12 @@ const styles = StyleSheet.create({
   price: {
     fontSize: 18,
     fontWeight: 'bold',
-    color: '#333',
+    color: '#007bff',
+    marginBottom: 2,
+  },
+  startPrice: {
+    fontSize: 12,
+    color: '#666',
   },
   emptyState: {
     alignItems: 'center',

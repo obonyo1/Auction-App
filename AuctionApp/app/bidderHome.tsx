@@ -1,207 +1,151 @@
-import React, { useState, useEffect } from 'react';
+import React, { useEffect, useState } from 'react';
 import { 
   View, 
+  Image, 
   Text, 
-  TouchableOpacity, 
+  ScrollView, 
   StyleSheet, 
-  FlatList, 
-  Alert,
-  RefreshControl,
+  TouchableOpacity, 
   ActivityIndicator,
-  Modal,
-  Pressable,
-  Image,
-  Dimensions
+  TextInput // Import TextInput
 } from 'react-native';
-import { useRouter } from 'expo-router';
-import { Stack } from 'expo-router';
-import { useAuth } from './context/authContext';
-
-const { width } = Dimensions.get('window');
-const cardWidth = (width - 60) / 2; 
+import { Stack, router } from 'expo-router';
 import { 
-  collection, 
-  query, 
-  where, 
-  orderBy, 
-  getDocs, 
-  limit 
-} from 'firebase/firestore';
-import { db } from './firebase/firebaseConfig';
-import { signOut } from 'firebase/auth';
-import { auth } from './firebase/firebaseConfig';
+  getDatabase, 
+  ref, 
+  onValue, 
+  // update, // Not used in this version, can be removed
+  // off // Not used in this version, can be removed
+} from 'firebase/database';
 
-interface AuctionItem {
+// Item type remains the same
+type Item = {
   id: string;
   title: string;
+  images: string[];
   description: string;
   startingBid: number;
   currentBid: number;
+  status: 'active' | 'completed' | 'upcoming';
+  endTime: number;
+  createdAt: number;
+  auctioneerId: string;
   category: string;
   condition: string;
-  images: string[];
-  status: 'active' | 'completed' | 'upcoming';
-  endTime: Date;
-  createdAt: Date;
-}
+  auctioneerName: string;
+};
 
-export default function AuctioneerHome() {
-  const router = useRouter();
-  const { username } = useAuth();
-  const [auctions, setAuctions] = useState<AuctionItem[]>([]);
-  const [loading, setLoading] = useState<boolean>(true);
-  const [refreshing, setRefreshing] = useState<boolean>(false);
-  const [menuVisible, setMenuVisible] = useState<boolean>(false);
+// --- NEW: Define categories for filtering ---
+// Add an 'All' option to reset the filter
+const CATEGORIES = ['All', 'Electronics', 'Fashion', 'Home Goods', 'Art', 'Vehicles', 'Other'];
 
-  const fetchAuctions = async () => {
-    try {
-      const auctionsRef = collection(db, 'auctions');
-      const q = query(
-        auctionsRef,
-        where('status', 'in', ['active', 'upcoming']),
-        orderBy('createdAt', 'desc'),
-        limit(20)
-      );
+export default function bidderHome() {
+  const [items, setItems] = useState<Item[]>([]);
+  const [loading, setLoading] = useState(true);
 
-      const querySnapshot = await getDocs(q);
-      const auctionsList: AuctionItem[] = [];
+  // --- NEW: State for search and filtering ---
+  const [searchQuery, setSearchQuery] = useState('');
+  const [selectedCategory, setSelectedCategory] = useState('All');
+  const [filteredItems, setFilteredItems] = useState<Item[]>([]);
 
-      querySnapshot.forEach((doc) => {
-        const data = doc.data();
-        auctionsList.push({
-          id: doc.id,
-          title: data.title || 'Untitled Auction',
-          description: data.description || '',
-          startingBid: data.startingBid || 0,
-          currentBid: data.currentBid || data.startingBid || 0,
-          category: data.category || 'Other',
-          condition: data.condition || 'Used',
-          images: data.images || [],
-          status: data.status,
-          endTime: data.endTime?.toDate() || new Date(),
-          createdAt: data.createdAt?.toDate() || new Date(),
-        });
-      });
-
-      setAuctions(auctionsList);
-    } catch (error) {
-      console.error('Error fetching auctions:', error);
-      Alert.alert('Error', 'Failed to load auctions');
-    } finally {
-      setLoading(false);
-      setRefreshing(false);
-    }
-  };
-
+  // This useEffect fetches all active auctions and stores them in the `items` state
   useEffect(() => {
-    fetchAuctions();
+    const db = getDatabase();
+    const auctionsRef = ref(db, 'auctions');
+
+    const unsubscribe = onValue(
+      auctionsRef,
+      (snapshot) => {
+        const loadedItems: Item[] = [];
+        
+        if (snapshot.exists()) {
+          const data = snapshot.val();
+          const currentTime = Date.now();
+          
+          Object.keys(data).forEach((key) => {
+            const auction = data[key];
+            const isActiveAndNotEnded = auction.status === 'active' && auction.endTime > currentTime;
+            
+            if (isActiveAndNotEnded) {
+              loadedItems.push({
+                id: key,
+                title: auction.title || 'Untitled Auction',
+                images: auction.images || [],
+                description: auction.description || 'No description available',
+                startingBid: auction.startingBid || 0,
+                currentBid: auction.currentBid || auction.startingBid || 0,
+                status: auction.status,
+                endTime: auction.endTime,
+                createdAt: auction.createdAt || Date.now(),
+                auctioneerId: auction.auctioneerId || '',
+                category: auction.category || 'Uncategorized',
+                condition: auction.condition || 'Unknown',
+                auctioneerName: auction.auctioneerName || 'Anonymous'
+              });
+            }
+          });
+          
+          loadedItems.sort((a, b) => a.endTime - b.endTime);
+        }
+        
+        setItems(loadedItems);
+        setLoading(false);
+      },
+      (error) => {
+        console.error('Realtime Database error:', error);
+        setLoading(false);
+      }
+    );
+
+    return () => {
+      unsubscribe();
+    };
   }, []);
 
-  const onRefresh = () => {
-    setRefreshing(true);
-    fetchAuctions();
+  // --- NEW: This useEffect filters the items whenever the search query, category, or master items list changes ---
+  useEffect(() => {
+    let updatedItems = [...items];
+
+    // 1. Filter by search query (checks title and description)
+    if (searchQuery.trim()) {
+      const lowercasedQuery = searchQuery.toLowerCase();
+      updatedItems = updatedItems.filter(item =>
+        item.title.toLowerCase().includes(lowercasedQuery) ||
+        item.description.toLowerCase().includes(lowercasedQuery)
+      );
+    }
+
+    // 2. Filter by category
+    if (selectedCategory !== 'All') {
+      updatedItems = updatedItems.filter(item => item.category === selectedCategory);
+    }
+
+    setFilteredItems(updatedItems);
+  }, [searchQuery, selectedCategory, items]);
+
+
+  const formatTimeLeft = (endTime: number) => {
+    // ... (your existing formatTimeLeft function, no changes needed)
+    const now = Date.now();
+    const timeLeft = endTime - now;
+    if (timeLeft <= 0) return 'Ended';
+    const days = Math.floor(timeLeft / (1000 * 60 * 60 * 24));
+    const hours = Math.floor((timeLeft % (1000 * 60 * 60 * 24)) / (1000 * 60 * 60));
+    const minutes = Math.floor((timeLeft % (1000 * 60 * 60)) / (1000 * 60));
+    const seconds = Math.floor((timeLeft % (1000 * 60)) / 1000);
+    if (days > 0) return `${days}d ${hours}h left`;
+    if (hours > 0) return `${hours}h ${minutes}m left`;
+    if (minutes > 0) return `${minutes}m left`;
+    return `${seconds}s left`;
   };
 
-  const handleLogout = async () => {
-    setMenuVisible(false);
-    Alert.alert(
-      'Logout',
-      'Are you sure you want to logout?',
-      [
-        { text: 'Cancel', style: 'cancel' },
-        {
-          text: 'Logout',
-          style: 'destructive',
-          onPress: async () => {
-            try {
-              await signOut(auth);
-              router.replace('/login');
-            } catch (error) {
-              console.error('Logout error:', error);
-              Alert.alert('Error', 'Failed to logout');
-            }
-          }
-        }
-      ]
-    );
+  const handleAuctionPress = (auctionId: string) => {
+    router.push(`/auctionDetails?id=${auctionId}`);
   };
 
-  const handleProfile = () => {
-    setMenuVisible(false);
-    router.push('/profile' as any);
+  const getDisplayImage = (images: string[]) => {
+    return images && images.length > 0 ? images[0] : null;
   };
-
-  const handleDeleteAccount = () => {
-    setMenuVisible(false);
-    Alert.alert(
-      'Delete Account',
-      'Are you sure you want to delete your account? This action cannot be undone.',
-      [
-        { text: 'Cancel', style: 'cancel' },
-        {
-          text: 'Delete',
-          style: 'destructive',
-          onPress: () => {
-            //delete account here
-            Alert.alert('Info', 'Delete account functionality needs to be implemented');
-          }
-        }
-      ]
-    );
-  };
-
-  const handleCart = () => {
-    router.push('/cart' as any);
-  };
-
-  const renderAuctionItem = ({ item }: { item: AuctionItem }) => (
-    <TouchableOpacity 
-      style={styles.auctionCard}
-      onPress={() => {
-        router.push(`/auctionDetails/${item.id}` as any);
-      }}
-    >
-      <View style={styles.imageContainer}>
-        {item.images && item.images.length > 0 ? (
-          <Image 
-            source={{ uri: item.images[0] }} 
-            style={styles.auctionImage}
-            resizeMode="cover"
-          />
-        ) : (
-          <View style={styles.placeholderImage}>
-            <Text style={styles.placeholderText}>No Image</Text>
-          </View>
-        )}
-        <View style={styles.categoryBadge}>
-          <Text style={styles.categoryText}>{item.category}</Text>
-        </View>
-      </View>
-      
-      <View style={styles.cardContent}>
-        <Text style={styles.auctionTitle} numberOfLines={2}>{item.title}</Text>
-        <Text style={styles.auctionDescription} numberOfLines={2}>
-          {item.description}
-        </Text>
-        
-        <View style={styles.conditionContainer}>
-          <Text style={styles.conditionLabel}>Condition: </Text>
-          <Text style={styles.conditionValue}>{item.condition}</Text>
-        </View>
-        
-        <View style={styles.bidContainer}>
-          <View style={styles.bidInfo}>
-            <Text style={styles.bidLabel}>Starting Bid</Text>
-            <Text style={styles.bidAmount}>${item.startingBid.toFixed(2)}</Text>
-          </View>
-          <View style={styles.bidInfo}>
-            <Text style={styles.bidLabel}>Current Bid</Text>
-            <Text style={[styles.bidAmount, styles.currentBid]}>${item.currentBid.toFixed(2)}</Text>
-          </View>
-        </View>
-      </View>
-    </TouchableOpacity>
-  );
 
   if (loading) {
     return (
@@ -209,7 +153,7 @@ export default function AuctioneerHome() {
         <Stack.Screen options={{ headerShown: false }} />
         <View style={styles.loadingContainer}>
           <ActivityIndicator size="large" color="#007bff" />
-          <Text style={styles.loadingText}>Loading auctions...</Text>
+          <Text style={styles.loadingText}>Loading active auctions...</Text>
         </View>
       </>
     );
@@ -218,125 +162,97 @@ export default function AuctioneerHome() {
   return (
     <>
       <Stack.Screen options={{ headerShown: false }} />
-      <View style={styles.container}>
-        {/* Header */}
-        <View style={styles.header}>
-          <TouchableOpacity 
-            style={styles.helpButton}
-            onPress={() => {
-              Alert.alert('Help', 'Contact support for assistance');
-            }}
-          >
-            <Text style={styles.helpButtonText}>?</Text>
-          </TouchableOpacity>
+      <ScrollView style={styles.scroll}>
+        <View style={styles.container}>
+          <Text style={styles.headerText}>Active Auctions</Text>
           
-          <View style={styles.rightHeaderButtons}>
-            {/* Cart Button */}
-            <TouchableOpacity 
-              style={styles.cartButton}
-              onPress={handleCart}
-            >
-              <View style={styles.cartIcon}>
-                <View style={styles.cartBody} />
-                <View style={styles.cartHandle} />
-                <View style={styles.cartWheel1} />
-                <View style={styles.cartWheel2} />
-              </View>
-            </TouchableOpacity>
-
-            {/* Hamburger Menu Button */}
-            <TouchableOpacity 
-              style={styles.menuButton}
-              onPress={() => setMenuVisible(true)}
-            >
-              <View style={styles.menuIcon}>
-                <View style={styles.menuLine} />
-                <View style={styles.menuLine} />
-                <View style={styles.menuLine} />
-              </View>
-            </TouchableOpacity>
+          {/* --- NEW: Search Bar --- */}
+          <View style={styles.searchContainer}>
+            <TextInput
+              style={styles.searchInput}
+              placeholder="Search by keyword..."
+              placeholderTextColor="#888"
+              value={searchQuery}
+              onChangeText={setSearchQuery}
+            />
           </View>
-        </View>
-
-        {/* Hamburger Menu Modal */}
-        <Modal
-          animationType="fade"
-          transparent={true}
-          visible={menuVisible}
-          onRequestClose={() => setMenuVisible(false)}
-        >
-          <Pressable 
-            style={styles.modalOverlay}
-            onPress={() => setMenuVisible(false)}
-          >
-            <View style={styles.menuContainer}>
-              <TouchableOpacity 
-                style={styles.menuItem}
-                onPress={handleProfile}
-              >
-                <Text style={styles.menuItemText}>Profile</Text>
-              </TouchableOpacity>
-              
-              <View style={styles.menuDivider} />
-              
-              <TouchableOpacity 
-                style={styles.menuItem}
-                onPress={handleLogout}
-              >
-                <Text style={styles.menuItemText}>Logout</Text>
-              </TouchableOpacity>
-              
-              <View style={styles.menuDivider} />
-              
-              <TouchableOpacity 
-                style={[styles.menuItem, styles.deleteMenuItem]}
-                onPress={handleDeleteAccount}
-              >
-                <Text style={[styles.menuItemText, styles.deleteMenuItemText]}>Delete Account</Text>
-              </TouchableOpacity>
-            </View>
-          </Pressable>
-        </Modal>
-
-        {/* Welcome Section */}
-        <View style={styles.welcomeSection}>
-          <Text style={styles.welcomeTitle}>Welcome</Text>
-          <Text style={styles.welcomeUsername}>{username || 'Auctioneer'}</Text>
-        </View>
-
-        {/* Divider */}
-        <View style={styles.divider} />
-
-        {/* Auctions Grid */}
-        <View style={styles.auctionsSection}>
-          <Text style={styles.sectionTitle}>Live Auctions</Text>
           
-          {auctions.length === 0 ? (
-            <View style={styles.emptyState}>
-              <Text style={styles.emptyStateText}>
-                No active auctions found. Check back later!
-              </Text>
+          {/* --- NEW: Category Filter --- */}
+          <View style={styles.categoryFilterContainer}>
+            <ScrollView horizontal showsHorizontalScrollIndicator={false}>
+              {CATEGORIES.map(category => (
+                <TouchableOpacity
+                  key={category}
+                  style={[
+                    styles.categoryButton,
+                    selectedCategory === category && styles.selectedCategoryButton
+                  ]}
+                  onPress={() => setSelectedCategory(category)}
+                >
+                  <Text style={[
+                    styles.categoryButtonText,
+                    selectedCategory === category && styles.selectedCategoryButtonText
+                  ]}>
+                    {category}
+                  </Text>
+                </TouchableOpacity>
+              ))}
+            </ScrollView>
+          </View>
+
+          {/* --- UPDATED: Conditional Rendering for "No Items" --- */}
+          {items.length === 0 ? (
+            <View style={styles.noItemsContainer}>
+              <Text style={styles.noItemsText}>No active auctions available right now.</Text>
+            </View>
+          ) : filteredItems.length === 0 ? (
+            <View style={styles.noItemsContainer}>
+              <Text style={styles.noItemsText}>No auctions match your search criteria.</Text>
+              <Text style={styles.debugText}>Try changing your search or category filter.</Text>
             </View>
           ) : (
-            <FlatList
-              data={auctions}
-              renderItem={renderAuctionItem}
-              keyExtractor={(item) => item.id}
-              numColumns={2}
-              columnWrapperStyle={styles.row}
-              refreshControl={
-                <RefreshControl
-                  refreshing={refreshing}
-                  onRefresh={onRefresh}
-                  colors={['#007bff']}
-                />
-              }
-              showsVerticalScrollIndicator={false}
-              contentContainerStyle={styles.listContainer}
-            />
+            // --- UPDATED: Map over `filteredItems` instead of `items` ---
+            filteredItems.map((item) => {
+              const displayImage = getDisplayImage(item.images);
+              return (
+                <TouchableOpacity 
+                  key={item.id} 
+                  style={styles.card}
+                  onPress={() => handleAuctionPress(item.id)}
+                  activeOpacity={0.7}
+                >
+                  {displayImage ? (
+                    <Image 
+                      source={{ uri: displayImage }} 
+                      style={styles.image}
+                      onError={(error) => console.log('Image failed to load:', displayImage, error.nativeEvent.error)}
+                    />
+                  ) : (
+                    <View style={styles.placeholderImage}>
+                      <Text style={styles.placeholderText}>No Image</Text>
+                    </View>
+                  )}
+                  <Text style={styles.name}>{item.title}</Text>
+                  <Text style={styles.description} numberOfLines={2}>{item.description}</Text>
+                  <View style={styles.categoryContainer}>
+                    <Text style={styles.category}>{item.category}</Text>
+                    <Text style={styles.condition}>{item.condition}</Text>
+                  </View>
+                  <View style={styles.priceContainer}>
+                    <Text style={styles.startPrice}>Starting: Ksh {item.startingBid.toLocaleString()}</Text>
+                    <Text style={styles.currentBid}>Current Bid: Ksh {item.currentBid.toLocaleString()}</Text>
+                  </View>
+                  <Text style={styles.auctioneer}>By: {item.auctioneerName}</Text>
+                  <Text style={styles.timeLeft}>{formatTimeLeft(item.endTime)}</Text>
+                  <View style={styles.tapHint}>
+                    <Text style={styles.tapHintText}>Tap to view details & bid</Text>
+                  </View>
+                </TouchableOpacity>
+              );
+            })
           )}
         </View>
-      </View>
+      </ScrollView>
     </>
   );
 }
@@ -633,5 +549,220 @@ const styles = StyleSheet.create({
     color: '#666',
     textAlign: 'center',
     lineHeight: 24,
+  },
+});
+// --- UPDATED: Add new styles for search and filter UI ---
+const styles = StyleSheet.create({
+  // ... (keep all your existing styles)
+  scroll: {
+    flex: 1,
+    backgroundColor: '#F8F9FA',
+  },
+  container: {
+    paddingBottom: 16, // Use paddingBottom instead of padding to allow full-width elements
+    alignItems: 'center',
+  },
+  loadingContainer: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    backgroundColor: '#F8F9FA',
+  },
+  loadingText: {
+    fontSize: 16,
+    color: '#666',
+    marginTop: 10,
+  },
+  headerText: {
+    fontSize: 28,
+    fontWeight: 'bold',
+    marginVertical: 20,
+    color: '#333',
+    textAlign: 'center',
+  },
+  // --- NEW STYLES START HERE ---
+  searchContainer: {
+    width: '95%',
+    marginBottom: 16,
+  },
+  searchInput: {
+    height: 50,
+    backgroundColor: '#fff',
+    borderRadius: 10,
+    paddingHorizontal: 15,
+    fontSize: 16,
+    borderWidth: 1,
+    borderColor: '#E1E5E9',
+    color: '#333',
+  },
+  categoryFilterContainer: {
+    width: '100%',
+    paddingHorizontal: 10,
+    marginBottom: 20,
+  },
+  categoryButton: {
+    paddingVertical: 8,
+    paddingHorizontal: 16,
+    backgroundColor: '#fff',
+    borderRadius: 20,
+    marginRight: 8,
+    borderWidth: 1,
+    borderColor: '#007bff',
+  },
+  selectedCategoryButton: {
+    backgroundColor: '#007bff',
+  },
+  categoryButtonText: {
+    color: '#007bff',
+    fontWeight: '600',
+    fontSize: 14,
+  },
+  selectedCategoryButtonText: {
+    color: '#fff',
+  },
+  // --- NEW STYLES END HERE ---
+  card: {
+    width: '95%',
+    backgroundColor: '#fff',
+    borderRadius: 12,
+    padding: 16,
+    marginBottom: 16,
+    alignItems: 'center',
+    elevation: 3,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.1,
+    shadowRadius: 4,
+    borderWidth: 1,
+    borderColor: '#E1E5E9',
+  },
+  image: {
+    width: '100%',
+    height: 200,
+    borderRadius: 8,
+    marginBottom: 12,
+    resizeMode: 'cover',
+  },
+  placeholderImage: {
+    width: '100%',
+    height: 200,
+    borderRadius: 8,
+    marginBottom: 12,
+    backgroundColor: '#E1E5E9',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  placeholderText: {
+    color: '#999',
+    fontSize: 16,
+    fontWeight: '500',
+  },
+  name: {
+    fontSize: 20,
+    fontWeight: 'bold',
+    marginBottom: 8,
+    textAlign: 'center',
+    color: '#333',
+    lineHeight: 24,
+  },
+  description: {
+    fontSize: 14,
+    color: '#666',
+    textAlign: 'center',
+    marginBottom: 12,
+    lineHeight: 20,
+    paddingHorizontal: 8,
+  },
+  categoryContainer: {
+    flexDirection: 'row',
+    gap: 12,
+    marginBottom: 12,
+  },
+  category: {
+    fontSize: 12,
+    color: '#007bff',
+    backgroundColor: '#E8F4FD',
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 12,
+    fontWeight: '500',
+  },
+  condition: {
+    fontSize: 12,
+    color: '#28a745',
+    backgroundColor: '#E8F5E8',
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 12,
+    fontWeight: '500',
+  },
+  priceContainer: {
+    width: '100%',
+    alignItems: 'center',
+    marginBottom: 8,
+  },
+  startPrice: {
+    fontSize: 14,
+    color: '#888',
+    marginBottom: 4,
+  },
+  currentBid: {
+    fontSize: 18,
+    color: '#007bff',
+    fontWeight: 'bold',
+  },
+  auctioneer: {
+    fontSize: 12,
+    color: '#666',
+    fontStyle: 'italic',
+    marginBottom: 8,
+  },
+  timeLeft: {
+    fontSize: 14,
+    color: '#ff6b35',
+    fontWeight: '600',
+    marginTop: 4,
+    backgroundColor: '#FFF3E0',
+    paddingHorizontal: 12,
+    paddingVertical: 4,
+    borderRadius: 12,
+  },
+  tapHint: {
+    marginTop: 12,
+    paddingVertical: 6,
+    paddingHorizontal: 16,
+    backgroundColor: '#007bff',
+    borderRadius: 20,
+  },
+  tapHintText: {
+    fontSize: 12,
+    color: '#fff',
+    fontWeight: '600',
+  },
+  noItemsContainer: {
+    marginTop: 50,
+    alignItems: 'center',
+    paddingHorizontal: 20,
+    backgroundColor: '#fff',
+    padding: 30,
+    borderRadius: 12,
+    elevation: 2,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.1,
+    shadowRadius: 4,
+  },
+  noItemsText: {
+    fontSize: 18,
+    color: '#666',
+    textAlign: 'center',
+    marginBottom: 10,
+    fontWeight: '500',
+  },
+  debugText: {
+    fontSize: 12,
+    color: '#999',
+    textAlign: 'center',
+    fontStyle: 'italic',
   },
 });

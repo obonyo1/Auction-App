@@ -8,7 +8,8 @@ import {
   StyleSheet,
   Alert,
   Image,
-  ActivityIndicator
+  ActivityIndicator,
+  Platform
 } from 'react-native';
 import { Stack, useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
@@ -29,6 +30,7 @@ export default function CreateAuction() {
   });
   const [images, setImages] = useState([]);
   const [loading, setLoading] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState(0);
 
   const categories = ['Electronics', 'Fashion', 'Home & Garden', 'Sports', 'Collectibles', 'Other'];
   const conditions = ['New', 'Like New', 'Good', 'Fair', 'Poor'];
@@ -45,9 +47,10 @@ export default function CreateAuction() {
       const result = await ImagePicker.launchImageLibraryAsync({
         mediaTypes: ImagePicker.MediaTypeOptions.Images,
         allowsMultipleSelection: true,
-        quality: 0.8,
+        quality: 0.7, // Reduced quality for faster upload
         aspect: [4, 3],
         allowsEditing: false,
+        base64: false, // We don't need base64
       });
 
       if (!result.canceled && result.assets) {
@@ -70,28 +73,64 @@ export default function CreateAuction() {
     setImages(prevImages => prevImages.filter((_, i) => i !== index));
   };
 
+  // Improved image upload function with better error handling
   const uploadImages = async (auctionId) => {
     const imageUrls = [];
     
     for (let i = 0; i < images.length; i++) {
       try {
         const image = images[i];
+        setUploadProgress(((i + 1) / images.length) * 100);
+        
+        // Create a blob from the image URI
         const response = await fetch(image.uri);
+        if (!response.ok) {
+          throw new Error(`Failed to fetch image: ${response.status}`);
+        }
+        
         const blob = await response.blob();
         
-        // Create unique filename
-        const timestamp = Date.now();
-        const imageRef = storageRef(storage, `auctions/${auctionId}/image_${timestamp}_${i}.jpg`);
+        // Validate blob
+        if (!blob || blob.size === 0) {
+          throw new Error('Invalid image data');
+        }
         
-        await uploadBytes(imageRef, blob);
+        // Create unique filename with better naming
+        const timestamp = Date.now();
+        const fileExtension = image.uri.split('.').pop()?.toLowerCase() || 'jpg';
+        const fileName = `image_${timestamp}_${i}.${fileExtension}`;
+        const imageRef = storageRef(storage, `auctions/${auctionId}/${fileName}`);
+        
+        // Upload with metadata
+        const metadata = {
+          contentType: `image/${fileExtension}`,
+          customMetadata: {
+            uploadedBy: auth.currentUser?.uid || 'unknown',
+            uploadedAt: new Date().toISOString(),
+            originalName: image.fileName || `image_${i}`
+          }
+        };
+        
+        await uploadBytes(imageRef, blob, metadata);
         const url = await getDownloadURL(imageRef);
         imageUrls.push(url);
+        
+        console.log(`Successfully uploaded image ${i + 1}/${images.length}`);
+        
       } catch (error) {
         console.error(`Error uploading image ${i}:`, error);
+        
+        // Show specific error message
+        Alert.alert(
+          'Upload Warning', 
+          `Failed to upload image ${i + 1}. The auction will be created with the successfully uploaded images.`
+        );
+        
         // Continue with other images even if one fails
       }
     }
     
+    setUploadProgress(0);
     return imageUrls;
   };
 
@@ -141,7 +180,9 @@ export default function CreateAuction() {
       // Upload images if any
       let imageUrls = [];
       if (images.length > 0) {
+        console.log(`Starting upload of ${images.length} images...`);
         imageUrls = await uploadImages(auctionId);
+        console.log(`Successfully uploaded ${imageUrls.length} images`);
       }
 
       // Calculate end time
@@ -156,7 +197,8 @@ export default function CreateAuction() {
         currentBid: parseFloat(formData.startingBid),
         category: formData.category,
         condition: formData.condition,
-        images: imageUrls,
+        images: imageUrls, // This will be an array of URLs
+        imageCount: imageUrls.length, // Add image count for easy reference
         auctioneerId: user.uid,
         auctioneerName: user.displayName || user.email?.split('@')[0] || 'Anonymous',
         auctioneerEmail: user.email,
@@ -182,12 +224,13 @@ export default function CreateAuction() {
         title: formData.title.trim(),
         status: 'active',
         createdAt: serverTimestamp(),
-        endTime: endTime
+        endTime: endTime,
+        imageCount: imageUrls.length
       });
 
       Alert.alert(
         'Success', 
-        'Auction created successfully!', 
+        `Auction created successfully with ${imageUrls.length} image(s)!`, 
         [
           { 
             text: 'OK', 
@@ -213,17 +256,9 @@ export default function CreateAuction() {
       
       let errorMessage = 'Failed to create auction. Please try again.';
       
-      if (error.code === 'storage/unauthorized') {
-        errorMessage = 'Permission denied. Please check your Firebase storage rules.';
-      } else if (error.code === 'database/permission-denied') {
-        errorMessage = 'Database permission denied. Please check your Firebase database rules.';
-      } else if (error.code === 'auth/user-not-found') {
-        errorMessage = 'User not authenticated. Please log in again.';
-      }
-      
-      Alert.alert('Error', errorMessage);
     } finally {
       setLoading(false);
+      setUploadProgress(0);
     }
   };
 
@@ -387,6 +422,16 @@ export default function CreateAuction() {
               </Text>
             </TouchableOpacity>
             
+            {/* Upload Progress */}
+            {loading && uploadProgress > 0 && (
+              <View style={styles.progressContainer}>
+                <Text style={styles.progressText}>Uploading images... {Math.round(uploadProgress)}%</Text>
+                <View style={styles.progressBar}>
+                  <View style={[styles.progressFill, { width: `${uploadProgress}%` }]} />
+                </View>
+              </View>
+            )}
+            
             {images.length > 0 && (
               <ScrollView horizontal style={styles.imagePreview} showsHorizontalScrollIndicator={false}>
                 {images.map((image, index) => (
@@ -536,6 +581,26 @@ const styles = StyleSheet.create({
   },
   imageButtonTextDisabled: {
     color: '#CCC',
+  },
+  progressContainer: {
+    marginTop: 12,
+  },
+  progressText: {
+    fontSize: 14,
+    color: '#666',
+    textAlign: 'center',
+    marginBottom: 8,
+  },
+  progressBar: {
+    height: 4,
+    backgroundColor: '#E1E5E9',
+    borderRadius: 2,
+    overflow: 'hidden',
+  },
+  progressFill: {
+    height: '100%',
+    backgroundColor: '#007BFF',
+    borderRadius: 2,
   },
   imagePreview: {
     marginTop: 12,
