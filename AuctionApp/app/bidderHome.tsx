@@ -37,7 +37,7 @@ type Item = {
 
 // --- NEW: Define categories for filtering ---
 // Add an 'All' option to reset the filter
-const CATEGORIES = ['All', 'Electronics', 'Fashion', 'Home Goods', 'Art', 'Vehicles', 'Other'];
+const CATEGORIES = ['All', 'Electronics', 'Fashion', 'Home & Garden', 'Sports', 'Collectibles', 'Other'];
 
 export default function bidderHome() {
   const [items, setItems] = useState<Item[]>([]);
@@ -123,6 +123,9 @@ export default function bidderHome() {
     setFilteredItems(updatedItems);
   }, [searchQuery, selectedCategory, items]);
 
+  const handleCartPress = () => {
+    router.push('/checkout' as any);
+  };
 
   const formatTimeLeft = (endTime: number) => {
     // ... (your existing formatTimeLeft function, no changes needed)
@@ -164,7 +167,21 @@ export default function bidderHome() {
       <Stack.Screen options={{ headerShown: false }} />
       <ScrollView style={styles.scroll}>
         <View style={styles.container}>
-          <Text style={styles.headerText}>Active Auctions</Text>
+          {/* Header with Cart */}
+          <View style={styles.header}>
+            <Text style={styles.headerText}>Active Auctions</Text>
+            <TouchableOpacity 
+              style={styles.cartButton}
+              onPress={handleCartPress}
+            >
+              <View style={styles.cartIcon}>
+                <View style={styles.cartBody} />
+                <View style={styles.cartHandle} />
+                <View style={styles.cartWheel1} />
+                <View style={styles.cartWheel2} />
+              </View>
+            </TouchableOpacity>
+          </View>
           
           {/* --- NEW: Search Bar --- */}
           <View style={styles.searchContainer}>
@@ -279,12 +296,70 @@ const styles = StyleSheet.create({
     color: '#666',
     marginTop: 10,
   },
+  header: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    width: '95%',
+    paddingTop: 50,
+    paddingBottom: 10,
+  },
   headerText: {
     fontSize: 28,
     fontWeight: 'bold',
-    marginVertical: 20,
     color: '#333',
-    textAlign: 'center',
+    flex: 1,
+  },
+  cartButton: {
+    width: 40,
+    height: 40,
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 8,
+  },
+  cartIcon: {
+    width: 24,
+    height: 20,
+    position: 'relative',
+  },
+  cartBody: {
+    width: 20,
+    height: 14,
+    borderWidth: 2,
+    borderColor: '#333',
+    borderRadius: 2,
+    position: 'absolute',
+    top: 2,
+    left: 2,
+  },
+  cartHandle: {
+    width: 8,
+    height: 8,
+    borderWidth: 2,
+    borderColor: '#333',
+    borderBottomWidth: 0,
+    borderRadius: 4,
+    position: 'absolute',
+    top: 0,
+    left: 0,
+  },
+  cartWheel1: {
+    width: 4,
+    height: 4,
+    backgroundColor: '#333',
+    borderRadius: 2,
+    position: 'absolute',
+    bottom: 0,
+    left: 6,
+  },
+  cartWheel2: {
+    width: 4,
+    height: 4,
+    backgroundColor: '#333',
+    borderRadius: 2,
+    position: 'absolute',
+    bottom: 0,
+    right: 4,
   },
   // --- NEW STYLES START HERE ---
   searchContainer: {
