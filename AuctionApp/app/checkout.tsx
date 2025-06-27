@@ -7,7 +7,11 @@ import {
   FlatList, 
   Alert,
   RefreshControl,
-  ActivityIndicator
+  ActivityIndicator,
+  Modal,
+  TextInput,
+  KeyboardAvoidingView,
+  Platform
 } from 'react-native';
 import { useRouter } from 'expo-router';
 import { Stack } from 'expo-router';
@@ -18,7 +22,8 @@ import {
   onValue, 
   query, 
   orderByChild, 
-  equalTo
+  equalTo,
+  update
 } from 'firebase/database';
 
 interface WonAuction {
@@ -39,12 +44,34 @@ interface CurrentUser {
   name: string;
 }
 
+interface PaymentModalData {
+  visible: boolean;
+  auctionId: string;
+  amount: number;
+  title: string;
+}
+
+// TinyPesa API configuration
+const TINYPESA_CONFIG = {
+  apiKey: 's9TOYovp1SIGBsftH7PhGqe2CNNptFqNmDiHCSn4', 
+  username: 'paubravo2004@gmail.com',
+  baseUrl: 'https://tinypesa.com/api/v1/express'
+};
+
 export default function Checkout() {
   const router = useRouter();
   const [wonAuctions, setWonAuctions] = useState<WonAuction[]>([]);
   const [loading, setLoading] = useState<boolean>(true);
   const [refreshing, setRefreshing] = useState<boolean>(false);
   const [currentUser, setCurrentUser] = useState<CurrentUser | null>(null);
+  const [paymentModal, setPaymentModal] = useState<PaymentModalData>({
+    visible: false,
+    auctionId: '',
+    amount: 0,
+    title: ''
+  });
+  const [phoneNumber, setPhoneNumber] = useState<string>('');
+  const [isProcessingPayment, setIsProcessingPayment] = useState<boolean>(false);
 
   // Firebase Auth listener
   useEffect(() => {
@@ -170,30 +197,238 @@ export default function Checkout() {
     fetchWonAuctions();
   };
 
+  // Format phone number for M-Pesa (ensure it starts with 254)
+  const formatPhoneNumber = (phone: string): string => {
+    // Remove all non-digit characters
+    const cleanPhone = phone.replace(/\D/g, '');
+    
+    // Handle different phone number formats
+    if (cleanPhone.startsWith('254')) {
+      return cleanPhone;
+    } else if (cleanPhone.startsWith('0')) {
+      return '254' + cleanPhone.substring(1);
+    } else if (cleanPhone.startsWith('7') || cleanPhone.startsWith('1')) {
+      return '254' + cleanPhone;
+    }
+    
+    return cleanPhone;
+  };
+
+  // Validate phone number
+  const isValidPhoneNumber = (phone: string): boolean => {
+    const formatted = formatPhoneNumber(phone);
+    // Kenyan phone numbers should be 12 digits starting with 254
+    return /^254[71][0-9]{8}$/.test(formatted);
+  };
+
+  // Update payment status in Firebase
+  const updatePaymentStatus = async (auctionId: string, status: 'pending' | 'paid' | 'processing') => {
+    try {
+      const db = getDatabase();
+      const auctionRef = ref(db, `auctions/${auctionId}`);
+      await update(auctionRef, { paymentStatus: status });
+    } catch (error) {
+      console.error('Error updating payment status:', error);
+    }
+  };
+
+  // Initiate M-Pesa STK Push with updated TinyPesa API
+  const initiateMpesaPayment = async (amount: number, phoneNumber: string, auctionId: string, description: string) => {
+    try {
+      setIsProcessingPayment(true);
+      
+      // Update payment status to processing
+      await updatePaymentStatus(auctionId, 'processing');
+
+      const formattedPhone = formatPhoneNumber(phoneNumber);
+      
+      const requestBody = {
+        amount: amount,
+        msisdn: formattedPhone,
+        account_no: auctionId,
+        description: description,
+        callback_url: `https://your-webhook-url.com/mpesa/callback/${auctionId}` // Replace with your actual webhook URL
+      };
+
+      console.log('Initiating M-Pesa payment with TinyPesa:', requestBody);
+
+      const response = await fetch(`${TINYPESA_CONFIG.baseUrl}/stk_push`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${TINYPESA_CONFIG.apiKey}`,
+        },
+        body: JSON.stringify(requestBody)
+      });
+
+      const responseText = await response.text();
+      console.log('Raw TinyPesa Response:', responseText);
+
+      let result;
+      try {
+        result = JSON.parse(responseText);
+      } catch (parseError) {
+        console.error('Error parsing response:', parseError);
+        throw new Error('Invalid response format from payment service');
+      }
+
+      console.log('Parsed TinyPesa STK Push Response:', result);
+
+      if (response.ok && (result.success || result.status === 'success' || result.ResponseCode === '0')) {
+        // Payment request sent successfully
+        Alert.alert(
+          'Payment Request Sent',
+          'Please check your phone for the M-Pesa payment prompt and enter your PIN to complete the payment.',
+          [
+            {
+              text: 'OK',
+              onPress: () => {
+                setPaymentModal({ visible: false, auctionId: '', amount: 0, title: '' });
+                setPhoneNumber('');
+                // Start polling for payment status
+                const transactionId = result.CheckoutRequestID || result.transaction_id || result.id || auctionId;
+                pollPaymentStatus(transactionId, auctionId);
+              }
+            }
+          ]
+        );
+      } else {
+        // Handle specific error messages
+        let errorMessage = 'Payment initiation failed';
+        
+        if (result.message) {
+          errorMessage = result.message;
+        } else if (result.error) {
+          errorMessage = result.error;
+        } else if (result.ResponseDescription) {
+          errorMessage = result.ResponseDescription;
+        } else if (result.errorMessage) {
+          errorMessage = result.errorMessage;
+        }
+        
+        throw new Error(errorMessage);
+      }
+
+    } catch (error) {
+      console.error('M-Pesa payment error:', error);
+      
+      // Reset payment status to pending on error
+      await updatePaymentStatus(auctionId, 'pending');
+      
+      Alert.alert(
+        'Payment Error',
+        `Failed to initiate payment: ${error.message || 'Unknown error'}. Please try again.`
+      );
+    } finally {
+      setIsProcessingPayment(false);
+    }
+  };
+
+  // Poll payment status with updated endpoint
+  const pollPaymentStatus = async (transactionId: string, auctionId: string) => {
+    let attempts = 0;
+    const maxAttempts = 24; // Poll for 4 minutes (24 * 10 seconds)
+    
+    const checkStatus = async () => {
+      try {
+        const response = await fetch(`${TINYPESA_CONFIG.baseUrl}/query`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${TINYPESA_CONFIG.apiKey}`,
+          },
+          body: JSON.stringify({
+            CheckoutRequestID: transactionId
+          })
+        });
+
+        const responseText = await response.text();
+        console.log('Payment status check response:', responseText);
+
+        let result;
+        try {
+          result = JSON.parse(responseText);
+        } catch (parseError) {
+          console.error('Error parsing status response:', parseError);
+          return;
+        }
+
+        console.log('Parsed payment status:', result);
+
+        // Check for successful payment
+        if (result.ResultCode === '0' || result.status === 'completed' || result.success) {
+          // Payment successful
+          await updatePaymentStatus(auctionId, 'paid');
+          Alert.alert('Payment Successful', 'Your payment has been processed successfully!');
+          return;
+        } else if (result.ResultCode && result.ResultCode !== '1032') {
+          // Payment failed (1032 is "Request cancelled by user")
+          await updatePaymentStatus(auctionId, 'pending');
+          const errorMessage = result.ResultDesc || 'Payment was not successful';
+          Alert.alert('Payment Failed', errorMessage);
+          return;
+        }
+
+        // If still processing and haven't reached max attempts, check again
+        if (attempts < maxAttempts) {
+          attempts++;
+          setTimeout(checkStatus, 10000); // Check again after 10 seconds
+        } else {
+          // Timeout - payment might still be processing
+          Alert.alert(
+            'Payment Status Unknown',
+            'We are still processing your payment. You will be notified once the payment is confirmed.'
+          );
+        }
+
+      } catch (error) {
+        console.error('Error checking payment status:', error);
+        // Continue polling unless we've reached max attempts
+        if (attempts < maxAttempts) {
+          attempts++;
+          setTimeout(checkStatus, 10000);
+        }
+      }
+    };
+
+    // Start checking after 10 seconds to give M-Pesa time to process
+    setTimeout(checkStatus, 10000);
+  };
+
   const handlePayment = (auctionId: string, amount: number, title: string) => {
+    setPaymentModal({
+      visible: true,
+      auctionId,
+      amount,
+      title
+    });
+  };
+
+  const processPayment = () => {
+    if (!phoneNumber.trim()) {
+      Alert.alert('Error', 'Please enter your phone number');
+      return;
+    }
+
+    if (!isValidPhoneNumber(phoneNumber)) {
+      Alert.alert('Error', 'Please enter a valid Kenyan phone number (e.g., 0712345678 or 254712345678)');
+      return;
+    }
+
     Alert.alert(
-      'Proceed to Payment',
-      `Pay Ksh ${amount.toLocaleString()} for "${title}"?`,
+      'Confirm Payment',
+      `Pay Ksh ${paymentModal.amount.toLocaleString()} for "${paymentModal.title}" using M-Pesa number ${phoneNumber}?`,
       [
         { text: 'Cancel', style: 'cancel' },
         {
           text: 'Pay Now',
           style: 'default',
           onPress: () => {
-            // Here you would integrate with a payment gateway
-            // For now, we'll show a mock payment process
-            Alert.alert(
-              'Payment Processing',
-              'Redirecting to payment gateway...',
-              [
-                {
-                  text: 'OK',
-                  onPress: () => {
-                    // Mock payment success
-                    Alert.alert('Payment Successful', 'Your payment has been processed successfully!');
-                  }
-                }
-              ]
+            initiateMpesaPayment(
+              paymentModal.amount,
+              phoneNumber,
+              paymentModal.auctionId,
+              `Payment for ${paymentModal.title}`
             );
           }
         }
@@ -269,7 +504,7 @@ export default function Checkout() {
             style={styles.paymentButton}
             onPress={() => handlePayment(item.id, item.finalBid, item.title)}
           >
-            <Text style={styles.paymentButtonText}>Pay Now</Text>
+            <Text style={styles.paymentButtonText}>Pay with M-Pesa</Text>
           </TouchableOpacity>
         )}
         
@@ -358,6 +593,77 @@ export default function Checkout() {
             />
           )}
         </View>
+
+        {/* M-Pesa Payment Modal */}
+        <Modal
+          visible={paymentModal.visible}
+          transparent={true}
+          animationType="fade"
+          onRequestClose={() => {
+            if (!isProcessingPayment) {
+              setPaymentModal({ visible: false, auctionId: '', amount: 0, title: '' });
+              setPhoneNumber('');
+            }
+          }}
+        >
+          <KeyboardAvoidingView 
+            style={styles.modalOverlay}
+            behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+          >
+            <View style={styles.modalContent}>
+              <Text style={styles.modalTitle}>M-Pesa Payment</Text>
+              
+              <View style={styles.paymentDetails}>
+                <Text style={styles.paymentItemTitle}>{paymentModal.title}</Text>
+                <Text style={styles.paymentAmount}>Ksh {paymentModal.amount.toLocaleString()}</Text>
+              </View>
+
+              <View style={styles.inputContainer}>
+                <Text style={styles.inputLabel}>Enter your M-Pesa phone number:</Text>
+                <TextInput
+                  style={styles.phoneInput}
+                  value={phoneNumber}
+                  onChangeText={setPhoneNumber}
+                  placeholder="e.g., 0712345678 or 254712345678"
+                  keyboardType="phone-pad"
+                  maxLength={15}
+                  editable={!isProcessingPayment}
+                />
+              </View>
+
+              <View style={styles.modalButtons}>
+                <TouchableOpacity 
+                  style={[styles.modalButton, styles.cancelButton]}
+                  onPress={() => {
+                    if (!isProcessingPayment) {
+                      setPaymentModal({ visible: false, auctionId: '', amount: 0, title: '' });
+                      setPhoneNumber('');
+                    }
+                  }}
+                  disabled={isProcessingPayment}
+                >
+                  <Text style={styles.cancelButtonText}>Cancel</Text>
+                </TouchableOpacity>
+                
+                <TouchableOpacity 
+                  style={[styles.modalButton, styles.payButton, isProcessingPayment && styles.disabledButton]}
+                  onPress={processPayment}
+                  disabled={isProcessingPayment}
+                >
+                  {isProcessingPayment ? (
+                    <ActivityIndicator size="small" color="#fff" />
+                  ) : (
+                    <Text style={styles.payButtonText}>Pay Now</Text>
+                  )}
+                </TouchableOpacity>
+              </View>
+
+              <Text style={styles.mpesaNote}>
+                You will receive an M-Pesa prompt on your phone. Enter your PIN to complete the payment.
+              </Text>
+            </View>
+          </KeyboardAvoidingView>
+        </Modal>
       </View>
     </>
   );
@@ -520,16 +826,16 @@ const styles = StyleSheet.create({
     marginBottom: 10,
   },
   paymentButton: {
-    backgroundColor: '#007bff',
-    paddingHorizontal: 16,
+    backgroundColor: '#00C851',
+    paddingHorizontal: 12,
     paddingVertical: 8,
     borderRadius: 20,
-    minWidth: 80,
+    minWidth: 100,
     alignItems: 'center',
   },
   paymentButtonText: {
     color: '#fff',
-    fontSize: 12,
+    fontSize: 11,
     fontWeight: '600',
   },
   processingButton: {
@@ -579,5 +885,104 @@ const styles = StyleSheet.create({
     color: '#fff',
     fontSize: 16,
     fontWeight: '600',
+  },
+  // Modal Styles
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0, 0, 0, 0.5)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingHorizontal: 20,
+  },
+  modalContent: {
+    backgroundColor: '#fff',
+    borderRadius: 16,
+    padding: 24,
+    width: '100%',
+    maxWidth: 400,
+  },
+  modalTitle: {
+    fontSize: 20,
+    fontWeight: 'bold',
+    color: '#333',
+    textAlign: 'center',
+    marginBottom: 20,
+  },
+  paymentDetails: {
+    alignItems: 'center',
+    marginBottom: 24,
+    paddingVertical: 16,
+    backgroundColor: '#f8f9fa',
+    borderRadius: 12,
+  },
+  paymentItemTitle: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#333',
+    marginBottom: 8,
+    textAlign: 'center',
+  },
+  paymentAmount: {
+    fontSize: 24,
+    fontWeight: 'bold',
+    color: '#00C851',
+  },
+  inputContainer: {
+    marginBottom: 24,
+  },
+  inputLabel: {
+    fontSize: 14,
+    fontWeight: '500',
+    color: '#333',
+    marginBottom: 8,
+  },
+  phoneInput: {
+    borderWidth: 1,
+    borderColor: '#ddd',
+    borderRadius: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 12,
+    fontSize: 16,
+    backgroundColor: '#fff',
+  },
+  modalButtons: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    marginBottom: 16,
+  },
+  modalButton: {
+    flex: 1,
+    paddingVertical: 12,
+    borderRadius: 8,
+    alignItems: 'center',
+    marginHorizontal: 8,
+  },
+  cancelButton: {
+    backgroundColor: '#f8f9fa',
+    borderWidth: 1,
+    borderColor: '#ddd',
+  },
+  cancelButtonText: {
+    color: '#666',
+    fontSize: 16,
+    fontWeight: '500',
+  },
+  payButton: {
+    backgroundColor: '#00C851',
+  },
+  payButtonText: {
+    color: '#fff',
+    fontSize: 16,
+    fontWeight: '600',
+  },
+  disabledButton: {
+    backgroundColor: '#ccc',
+  },
+  mpesaNote: {
+    fontSize: 12,
+    color: '#666',
+    textAlign: 'center',
+    fontStyle: 'italic',
+    lineHeight: 16,
   },
 });
