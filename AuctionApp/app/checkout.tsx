@@ -51,11 +51,26 @@ interface PaymentModalData {
   title: string;
 }
 
-// TinyPesa API configuration
-const TINYPESA_CONFIG = {
-  apiKey: 's9TOYovp1SIGBsftH7PhGqe2CNNptFqNmDiHCSn4', 
-  username: 'paubravo2004@gmail.com',
-  baseUrl: 'https://tinypesa.com/api/v1/express'
+// M-Pesa Daraja API configuration
+// TODO: Replace these with your actual Daraja app credentials
+const MPESA_CONFIG = {
+  // Get these from your Daraja app dashboard
+  consumerKey: 'esS27JygO5uNE9XdGy1nem1XyrhUeMo8KmvAtfGzrladrngP', // TODO: Replace with your consumer key
+  consumerSecret: '3uY78bYqnE7BuxayL3gtVqz0gASYhfJe7J9o36TPKf04WCqfonTMdFv88s3c9ADN', // TODO: Replace with your consumer secret
+  
+  // For sandbox testing use '174379', for production use your registered short code
+  businessShortCode: '174379', // TODO: Replace with your production short code when going live
+  
+  // Sandbox passkey (for production, get your own from Daraja)
+  passkey: 'bfb279f9aa9bdbcf158e97dd71a467cd2e0c893059b10f78e6b72ada1ed2c919',
+  
+  // API endpoints
+  baseUrl: 'https://sandbox.safaricom.co.ke', // TODO: Change to 'https://api.safaricom.co.ke' for production
+  
+  // Your backend callback URL - deploy the backend first, then update this
+  callbackUrl: 'https://your-backend-url.herokuapp.com/mpesa/callback', // TODO: Replace with your deployed backend URL
+  
+  environment: 'sandbox' // TODO: Change to 'production' when going live
 };
 
 export default function Checkout() {
@@ -90,6 +105,43 @@ export default function Checkout() {
     
     return () => unsubscribe();
   }, []);
+
+  // Generate M-Pesa access token
+  const generateAccessToken = async (): Promise<string> => {
+    try {
+      const auth = btoa(`${MPESA_CONFIG.consumerKey}:${MPESA_CONFIG.consumerSecret}`);
+      
+      const response = await fetch(`${MPESA_CONFIG.baseUrl}/oauth/v1/generate?grant_type=client_credentials`, {
+        method: 'GET',
+        headers: {
+          'Authorization': `Basic ${auth}`,
+          'Content-Type': 'application/json',
+        },
+      });
+
+      if (!response.ok) {
+        throw new Error('Failed to generate access token');
+      }
+
+      const data = await response.json();
+      return data.access_token;
+    } catch (error) {
+      console.error('Error generating access token:', error);
+      throw new Error('Failed to authenticate with M-Pesa');
+    }
+  };
+
+  // Generate password for STK Push
+  const generatePassword = (): string => {
+    const timestamp = new Date().toISOString().replace(/[^0-9]/g, '').slice(0, -3);
+    const password = btoa(`${MPESA_CONFIG.businessShortCode}${MPESA_CONFIG.passkey}${timestamp}`);
+    return password;
+  };
+
+  // Get timestamp in the required format
+  const getTimestamp = (): string => {
+    return new Date().toISOString().replace(/[^0-9]/g, '').slice(0, -3);
+  };
 
   const fetchWonAuctions = async () => {
     try {
@@ -232,7 +284,7 @@ export default function Checkout() {
     }
   };
 
-  // Initiate M-Pesa STK Push with updated TinyPesa API
+  // Initiate M-Pesa STK Push with Daraja API
   const initiateMpesaPayment = async (amount: number, phoneNumber: string, auctionId: string, description: string) => {
     try {
       setIsProcessingPayment(true);
@@ -240,41 +292,52 @@ export default function Checkout() {
       // Update payment status to processing
       await updatePaymentStatus(auctionId, 'processing');
 
+      // Get access token
+      const accessToken = await generateAccessToken();
+      
       const formattedPhone = formatPhoneNumber(phoneNumber);
+      const timestamp = getTimestamp();
+      const password = generatePassword();
       
       const requestBody = {
-        amount: amount,
-        msisdn: formattedPhone,
-        account_no: auctionId,
-        description: description,
-        callback_url: `https://your-webhook-url.com/mpesa/callback/${auctionId}` // Replace with your actual webhook URL
+        BusinessShortCode: MPESA_CONFIG.businessShortCode,
+        Password: password,
+        Timestamp: timestamp,
+        TransactionType: 'CustomerPayBillOnline',
+        Amount: amount,
+        PartyA: formattedPhone,
+        PartyB: MPESA_CONFIG.businessShortCode,
+        PhoneNumber: formattedPhone,
+        CallBackURL: `${MPESA_CONFIG.callbackUrl}/${auctionId}`,
+        AccountReference: auctionId,
+        TransactionDesc: description
       };
 
-      console.log('Initiating M-Pesa payment with TinyPesa:', requestBody);
+      console.log('Initiating M-Pesa STK Push:', requestBody);
 
-      const response = await fetch(`${TINYPESA_CONFIG.baseUrl}/stk_push`, {
+      const response = await fetch(`${MPESA_CONFIG.baseUrl}/mpesa/stkpush/v1/processrequest`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'Authorization': `Bearer ${TINYPESA_CONFIG.apiKey}`,
+          'Authorization': `Bearer ${accessToken}`,
         },
         body: JSON.stringify(requestBody)
       });
 
       const responseText = await response.text();
-      console.log('Raw TinyPesa Response:', responseText);
+      console.log('M-Pesa STK Push Response:', responseText);
 
       let result;
       try {
         result = JSON.parse(responseText);
       } catch (parseError) {
         console.error('Error parsing response:', parseError);
-        throw new Error('Invalid response format from payment service');
+        throw new Error('Invalid response format from M-Pesa service');
       }
 
-      console.log('Parsed TinyPesa STK Push Response:', result);
+      console.log('Parsed M-Pesa Response:', result);
 
-      if (response.ok && (result.success || result.status === 'success' || result.ResponseCode === '0')) {
+      if (response.ok && result.ResponseCode === '0') {
         // Payment request sent successfully
         Alert.alert(
           'Payment Request Sent',
@@ -286,8 +349,8 @@ export default function Checkout() {
                 setPaymentModal({ visible: false, auctionId: '', amount: 0, title: '' });
                 setPhoneNumber('');
                 // Start polling for payment status
-                const transactionId = result.CheckoutRequestID || result.transaction_id || result.id || auctionId;
-                pollPaymentStatus(transactionId, auctionId);
+                const checkoutRequestId = result.CheckoutRequestID;
+                pollPaymentStatus(checkoutRequestId, auctionId);
               }
             }
           ]
@@ -296,14 +359,12 @@ export default function Checkout() {
         // Handle specific error messages
         let errorMessage = 'Payment initiation failed';
         
-        if (result.message) {
-          errorMessage = result.message;
-        } else if (result.error) {
-          errorMessage = result.error;
-        } else if (result.ResponseDescription) {
+        if (result.ResponseDescription) {
           errorMessage = result.ResponseDescription;
         } else if (result.errorMessage) {
           errorMessage = result.errorMessage;
+        } else if (result.ResponseCode) {
+          errorMessage = `Error Code: ${result.ResponseCode}`;
         }
         
         throw new Error(errorMessage);
@@ -324,22 +385,32 @@ export default function Checkout() {
     }
   };
 
-  // Poll payment status with updated endpoint
-  const pollPaymentStatus = async (transactionId: string, auctionId: string) => {
+  // Poll payment status with Daraja STK Query
+  const pollPaymentStatus = async (checkoutRequestId: string, auctionId: string) => {
     let attempts = 0;
     const maxAttempts = 24; // Poll for 4 minutes (24 * 10 seconds)
     
     const checkStatus = async () => {
       try {
-        const response = await fetch(`${TINYPESA_CONFIG.baseUrl}/query`, {
+        // Get access token for query
+        const accessToken = await generateAccessToken();
+        const timestamp = getTimestamp();
+        const password = generatePassword();
+        
+        const queryBody = {
+          BusinessShortCode: MPESA_CONFIG.businessShortCode,
+          Password: password,
+          Timestamp: timestamp,
+          CheckoutRequestID: checkoutRequestId
+        };
+
+        const response = await fetch(`${MPESA_CONFIG.baseUrl}/mpesa/stkpushquery/v1/query`, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
-            'Authorization': `Bearer ${TINYPESA_CONFIG.apiKey}`,
+            'Authorization': `Bearer ${accessToken}`,
           },
-          body: JSON.stringify({
-            CheckoutRequestID: transactionId
-          })
+          body: JSON.stringify(queryBody)
         });
 
         const responseText = await response.text();
@@ -356,13 +427,18 @@ export default function Checkout() {
         console.log('Parsed payment status:', result);
 
         // Check for successful payment
-        if (result.ResultCode === '0' || result.status === 'completed' || result.success) {
+        if (result.ResultCode === '0') {
           // Payment successful
           await updatePaymentStatus(auctionId, 'paid');
           Alert.alert('Payment Successful', 'Your payment has been processed successfully!');
           return;
-        } else if (result.ResultCode && result.ResultCode !== '1032') {
-          // Payment failed (1032 is "Request cancelled by user")
+        } else if (result.ResultCode === '1032') {
+          // Payment cancelled by user
+          await updatePaymentStatus(auctionId, 'pending');
+          Alert.alert('Payment Cancelled', 'Payment was cancelled. You can try again.');
+          return;
+        } else if (result.ResultCode && result.ResultCode !== '1037') {
+          // Payment failed (1037 is timeout/still processing)
           await updatePaymentStatus(auctionId, 'pending');
           const errorMessage = result.ResultDesc || 'Payment was not successful';
           Alert.alert('Payment Failed', errorMessage);

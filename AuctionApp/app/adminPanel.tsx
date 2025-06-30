@@ -9,24 +9,31 @@ import {
   RefreshControl,
   ActivityIndicator,
   SafeAreaView,
-  StatusBar
+  StatusBar,
+  Dimensions
 } from 'react-native';
 import { useRouter, Stack } from 'expo-router';
 import { collection, getDocs, query, where, deleteDoc, doc } from 'firebase/firestore';
 import { Ionicons } from '@expo/vector-icons';
+import Svg, { Line, Circle, Text as SvgText, G } from 'react-native-svg';
 import { db } from './firebase/firebaseConfig'; // Adjust the import path to your Firestore config
+
+const { width: screenWidth } = Dimensions.get('window');
 
 export default function AdminPanel() {
   const router = useRouter();
   const [auctioneers, setAuctioneers] = useState([]);
   const [biddersCount, setBiddersCount] = useState(0);
   const [auctioneersCount, setAuctioneersCount] = useState(0);
+  const [auctionsData, setAuctionsData] = useState([]);
+  const [totalAuctions, setTotalAuctions] = useState(0);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [deleting, setDeleting] = useState(null);
 
   useEffect(() => {
     fetchUsers();
+    fetchAuctionsData();
   }, []);
 
   const fetchUsers = async () => {
@@ -51,6 +58,36 @@ export default function AdminPanel() {
     } catch (err) {
       console.error('Error fetching users:', err);
       Alert.alert('Error', 'Could not fetch users');
+    }
+  };
+
+  const fetchAuctionsData = async () => {
+    try {
+      const auctionsRef = collection(db, 'auctions');
+      const auctionsSnap = await getDocs(auctionsRef);
+      
+      // Initialize data for all days of the week
+      const daysOfWeek = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+      const weeklyData = daysOfWeek.map(day => ({ day, auctions: 0 }));
+      
+      let total = 0;
+      
+      // Process auctions and count by day of week
+      auctionsSnap.docs.forEach(doc => {
+        const auction = doc.data();
+        if (auction.createdAt) {
+          const date = auction.createdAt.toDate ? auction.createdAt.toDate() : new Date(auction.createdAt);
+          const dayIndex = date.getDay(); // 0 = Sunday, 1 = Monday, etc.
+          weeklyData[dayIndex].auctions += 1;
+          total += 1;
+        }
+      });
+      
+      setAuctionsData(weeklyData);
+      setTotalAuctions(total);
+    } catch (err) {
+      console.error('Error fetching auctions data:', err);
+      Alert.alert('Error', 'Could not fetch auctions data');
     } finally {
       setLoading(false);
       setRefreshing(false);
@@ -60,6 +97,7 @@ export default function AdminPanel() {
   const onRefresh = () => {
     setRefreshing(true);
     fetchUsers();
+    fetchAuctionsData();
   };
 
   const handleDeleteAuctioneer = async (userId, userEmail) => {
@@ -163,6 +201,108 @@ export default function AdminPanel() {
     </View>
   );
 
+  const CustomLineChart = ({ data }) => {
+    const chartWidth = screenWidth - 80;
+    const chartHeight = 200;
+    const padding = 40;
+    const maxValue = Math.max(...data.map(d => d.auctions)) || 1;
+    
+    // Calculate points for the line
+    const points = data.map((item, index) => {
+      const x = padding + (index * (chartWidth - 2 * padding)) / (data.length - 1);
+      const y = chartHeight - padding - ((item.auctions / maxValue) * (chartHeight - 2 * padding));
+      return { x, y, value: item.auctions, day: item.day };
+    });
+
+    return (
+      <View style={styles.chartSvgContainer}>
+        <Svg width={chartWidth} height={chartHeight + 40}>
+          {/* Grid lines */}
+          <G>
+            {[0, 1, 2, 3, 4].map((i) => {
+              const y = chartHeight - padding - (i * (chartHeight - 2 * padding)) / 4;
+              return (
+                <Line
+                  key={`grid-${i}`}
+                  x1={padding}
+                  y1={y}
+                  x2={chartWidth - padding}
+                  y2={y}
+                  stroke="#E0E0E0"
+                  strokeDasharray="3,3"
+                />
+              );
+            })}
+          </G>
+          
+          {/* Main line */}
+          <G>
+            {points.slice(0, -1).map((point, index) => (
+              <Line
+                key={`line-${index}`}
+                x1={point.x}
+                y1={point.y}
+                x2={points[index + 1].x}
+                y2={points[index + 1].y}
+                stroke="#007BFF"
+                strokeWidth="3"
+              />
+            ))}
+          </G>
+          
+          {/* Data points */}
+          <G>
+            {points.map((point, index) => (
+              <Circle
+                key={`point-${index}`}
+                cx={point.x}
+                cy={point.y}
+                r="5"
+                fill="#007BFF"
+                stroke="#FFF"
+                strokeWidth="2"
+              />
+            ))}
+          </G>
+          
+          {/* Y-axis labels */}
+          <G>
+            {[0, 1, 2, 3, 4].map((i) => {
+              const y = chartHeight - padding - (i * (chartHeight - 2 * padding)) / 4;
+              const value = Math.round((i * maxValue) / 4);
+              return (
+                <SvgText
+                  key={`y-label-${i}`}
+                  x={padding - 10}
+                  y={y + 4}
+                  fontSize="12"
+                  fill="#666"
+                  textAnchor="end"
+                >
+                  {value}
+                </SvgText>
+              );
+            })}
+          </G>
+        </Svg>
+        
+        {/* X-axis labels (using regular Text components) */}
+        <View style={styles.xAxisLabels}>
+          {data.map((item, index) => (
+            <View key={`x-label-${index}`} style={styles.xAxisLabel}>
+              <Text style={styles.xAxisLabelText}>
+                {item.day.substring(0, 3)}
+              </Text>
+              <Text style={styles.xAxisValue}>
+                {item.auctions}
+              </Text>
+            </View>
+          ))}
+        </View>
+      </View>
+    );
+  };
+
   if (loading) {
     return (
       <SafeAreaView style={styles.container}>
@@ -215,6 +355,51 @@ export default function AdminPanel() {
             icon="people-outline"
             color="#28A745"
           />
+          <StatCard 
+            title="Total Auctions" 
+            count={totalAuctions} 
+            icon="stats-chart-outline"
+            color="#6F42C1"
+          />
+        </View>
+
+        {/* Auctions Analytics Chart */}
+        <View style={styles.section}>
+          <View style={styles.sectionHeader}>
+            <Text style={styles.sectionTitle}>Auction Analytics</Text>
+            <Text style={styles.sectionSubtitle}>
+              Daily auction activity throughout the week
+            </Text>
+          </View>
+
+          <View style={styles.chartContainer}>
+            <View style={styles.chartHeader}>
+              <Ionicons name="analytics-outline" size={20} color="#007BFF" />
+              <Text style={styles.chartTitle}>Auctions by Day of Week</Text>
+            </View>
+            
+            <View style={styles.chartWrapper}>
+              <CustomLineChart data={auctionsData} />
+            </View>
+
+            {/* Chart Summary */}
+            <View style={styles.chartSummary}>
+              <View style={styles.summaryItem}>
+                <Text style={styles.summaryLabel}>Peak Day</Text>
+                <Text style={styles.summaryValue}>
+                  {auctionsData.reduce((prev, curr) => 
+                    prev.auctions > curr.auctions ? prev : curr
+                  ).day}
+                </Text>
+              </View>
+              <View style={styles.summaryItem}>
+                <Text style={styles.summaryLabel}>Weekly Average</Text>
+                <Text style={styles.summaryValue}>
+                  {(totalAuctions / 7).toFixed(1)}
+                </Text>
+              </View>
+            </View>
+          </View>
         </View>
 
         {/* Auctioneers Section */}
@@ -323,6 +508,7 @@ const styles = StyleSheet.create({
   },
   section: {
     paddingHorizontal: 20,
+    marginBottom: 24,
   },
   sectionHeader: {
     marginBottom: 16,
@@ -336,6 +522,75 @@ const styles = StyleSheet.create({
   sectionSubtitle: {
     fontSize: 14,
     color: '#666',
+  },
+  chartContainer: {
+    backgroundColor: '#FFF',
+    borderRadius: 12,
+    padding: 16,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.1,
+    shadowRadius: 8,
+    elevation: 3,
+  },
+  chartHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 16,
+  },
+  chartTitle: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#1A1A1A',
+    marginLeft: 8,
+  },
+  chartWrapper: {
+    marginBottom: 16,
+  },
+  chartSvgContainer: {
+    alignItems: 'center',
+    marginVertical: 10,
+  },
+  xAxisLabels: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    paddingHorizontal: 40,
+    marginTop: 10,
+  },
+  xAxisLabel: {
+    alignItems: 'center',
+    flex: 1,
+  },
+  xAxisLabelText: {
+    fontSize: 12,
+    color: '#666',
+    fontWeight: '500',
+  },
+  xAxisValue: {
+    fontSize: 14,
+    color: '#007BFF',
+    fontWeight: 'bold',
+    marginTop: 2,
+  },
+  chartSummary: {
+    flexDirection: 'row',
+    justifyContent: 'space-around',
+    paddingTop: 16,
+    borderTopWidth: 1,
+    borderTopColor: '#E0E0E0',
+  },
+  summaryItem: {
+    alignItems: 'center',
+  },
+  summaryLabel: {
+    fontSize: 12,
+    color: '#666',
+    marginBottom: 4,
+  },
+  summaryValue: {
+    fontSize: 16,
+    fontWeight: 'bold',
+    color: '#007BFF',
   },
   usersList: {
     paddingBottom: 20,
