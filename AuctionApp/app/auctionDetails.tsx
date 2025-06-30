@@ -33,7 +33,7 @@ type Bid = {
 type AuctionDetails = {
   id: string;
   title: string;
-  images: string;
+  images: string | string[] | any; // More flexible image handling
   description: string;
   startingBid: number;
   currentBid: number;
@@ -62,6 +62,68 @@ export default function AuctionDetailsPage() {
   const [placingBid, setPlacingBid] = useState(false);
   const [timeLeft, setTimeLeft] = useState('');
   const [currentUser, setCurrentUser] = useState<CurrentUser | null>(null);
+
+  // Updated function to handle flexible image formats
+  const getDisplayImage = (imageData: string | string[] | any) => {
+    // Handle null, undefined, or empty cases
+    if (!imageData) {
+      return null;
+    }
+    
+    // If it's a string (single image URL), return it directly
+    if (typeof imageData === 'string' && imageData.trim().length > 0) {
+      return imageData;
+    }
+    
+    // If it's an array, process the first element
+    if (Array.isArray(imageData) && imageData.length > 0) {
+      const firstImage = imageData[0];
+      
+      // Handle null or undefined entries
+      if (!firstImage) {
+        return null;
+      }
+      
+      // Handle ImgBB object format
+      if (typeof firstImage === 'object' && 
+          firstImage !== null && 
+          !Array.isArray(firstImage) && 
+          ('url' in firstImage || 'displayUrl' in firstImage || 'thumbUrl' in firstImage)) {
+        
+        // Prefer displayUrl for better quality, fallback to url, then thumbUrl
+        const imageUrl = firstImage.displayUrl || firstImage.url || firstImage.thumbUrl;
+        
+        // Ensure we're returning a string, not another object
+        if (typeof imageUrl === 'string' && imageUrl.trim().length > 0) {
+          return imageUrl;
+        }
+        
+        return null;
+      }
+      
+      // Handle legacy string format in array
+      if (typeof firstImage === 'string' && firstImage.trim().length > 0) {
+        return firstImage;
+      }
+    }
+    
+    // Handle single ImgBB object (not in array)
+    if (typeof imageData === 'object' && 
+        imageData !== null && 
+        !Array.isArray(imageData) && 
+        ('url' in imageData || 'displayUrl' in imageData || 'thumbUrl' in imageData)) {
+      
+      const imageUrl = imageData.displayUrl || imageData.url || imageData.thumbUrl;
+      
+      if (typeof imageUrl === 'string' && imageUrl.trim().length > 0) {
+        return imageUrl;
+      }
+    }
+    
+    // If we get here, the data format is unexpected
+    console.warn('Unexpected image format:', imageData);
+    return null;
+  };
 
   // Firebase Auth listener
   useEffect(() => {
@@ -260,6 +322,7 @@ export default function AuctionDetailsPage() {
   }
 
   const isAuctionActive = auction.status === 'active' && auction.endTime > Date.now();
+  const displayImage = getDisplayImage(auction.images);
 
   return (
     <>
@@ -269,11 +332,12 @@ export default function AuctionDetailsPage() {
       }} />
       <ScrollView style={styles.container}>
         {/* Main Image */}
-        {auction.images? (
+        {displayImage ? (
           <Image 
-            source={{ uri: auction.images}} 
+            source={{ uri: displayImage }} 
             style={styles.mainImage}
             resizeMode="cover"
+            onError={(error) => console.log('Image failed to load:', displayImage, error.nativeEvent.error)}
           />
         ) : (
           <View style={styles.placeholderImage}>

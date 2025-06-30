@@ -146,21 +146,46 @@ export default function bidderHome() {
     router.push(`/auctionDetails?id=${auctionId}`);
   };
 
-  const getDisplayImage = (images: string[]) => {
-    return images && images.length > 0 ? images[0] : null;
-  };
-
-  if (loading) {
-    return (
-      <>
-        <Stack.Screen options={{ headerShown: false }} />
-        <View style={styles.loadingContainer}>
-          <ActivityIndicator size="large" color="#007bff" />
-          <Text style={styles.loadingText}>Loading active auctions...</Text>
-        </View>
-      </>
-    );
+// Updated function to handle ImgBB image objects with proper null checks
+const getDisplayImage = (images: Item['images']) => {
+  // Return null immediately if no images or empty array
+  if (!images || !Array.isArray(images) || images.length === 0) {
+    return null;
   }
+  
+  const firstImage = images[0];
+  
+  // Handle null or undefined entries
+  if (!firstImage) {
+    return null;
+  }
+  
+  // Handle ImgBB object format - check for specific properties to confirm it's an ImgBB object
+  if (typeof firstImage === 'object' && 
+      firstImage !== null && 
+      !Array.isArray(firstImage) && 
+      ('url' in firstImage || 'displayUrl' in firstImage || 'thumbUrl' in firstImage)) {
+    
+    // Prefer displayUrl for better quality, fallback to url, then thumbUrl
+    const imageUrl = firstImage.displayUrl || firstImage.url || firstImage.thumbUrl;
+    
+    // Ensure we're returning a string, not another object
+    if (typeof imageUrl === 'string' && imageUrl.trim().length > 0) {
+      return imageUrl;
+    }
+    
+    return null;
+  }
+  
+  // Handle legacy string format (backward compatibility)
+  if (typeof firstImage === 'string' && firstImage.trim().length > 0) {
+    return firstImage;
+  }
+  
+  // If we get here, the data format is unexpected
+  console.warn('Unexpected image format:', firstImage);
+  return null;
+};
 
   return (
     <>

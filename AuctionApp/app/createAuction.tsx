@@ -15,8 +15,10 @@ import { Stack, useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import * as ImagePicker from 'expo-image-picker';
 import { ref, push, set, serverTimestamp } from 'firebase/database';
-import { ref as storageRef, uploadBytes, getDownloadURL } from 'firebase/storage';
-import { auth, rtdb, storage } from './firebase/firebaseConfig';
+import { auth, rtdb } from './firebase/firebaseConfig';
+
+const IMGBB_API_KEY = 'ff41b9395ae4b0f2851b0048671c9db1';
+const IMGBB_UPLOAD_URL = 'https://api.imgbb.com/1/upload';
 
 export default function CreateAuction() {
   const router = useRouter();
@@ -37,7 +39,6 @@ export default function CreateAuction() {
 
   const pickImage = async () => {
     try {
-      // Request permissions
       const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
       if (status !== 'granted') {
         Alert.alert('Permission needed', 'Please grant photo library access to add images');
@@ -47,14 +48,13 @@ export default function CreateAuction() {
       const result = await ImagePicker.launchImageLibraryAsync({
         mediaTypes: ImagePicker.MediaTypeOptions.Images,
         allowsMultipleSelection: true,
-        quality: 0.7, // Reduced quality for faster upload
+        quality: 0.8, // Slightly higher quality for better ImgBB results
         aspect: [4, 3],
         allowsEditing: false,
-        base64: false, // We don't need base64
+        base64: true, // We need base64 for ImgBB
       });
 
       if (!result.canceled && result.assets) {
-        // Limit to 5 images total
         const remainingSlots = 5 - images.length;
         const newImages = result.assets.slice(0, remainingSlots);
         setImages(prevImages => [...prevImages, ...newImages]);
@@ -73,65 +73,92 @@ export default function CreateAuction() {
     setImages(prevImages => prevImages.filter((_, i) => i !== index));
   };
 
-  // Improved image upload function with better error handling
+  // ImgBB upload function with comprehensive error handling
+  const uploadImageToImgBB = async (base64Image, filename = 'auction_image') => {
+    try {
+      const formData = new FormData();
+      formData.append('key', IMGBB_API_KEY);
+      formData.append('image', base64Image);
+      formData.append('name', filename);
+      formData.append('expiration', '15552000'); // 6 months in seconds
+
+      const response = await fetch(IMGBB_UPLOAD_URL, {
+        method: 'POST',
+        body: formData,
+        headers: {
+          'Content-Type': 'multipart/form-data',
+        },
+      });
+
+      const result = await response.json();
+
+      if (!response.ok || !result.success) {
+        throw new Error(result.error?.message || `HTTP ${response.status}: Upload failed`);
+      }
+
+      return {
+        url: result.data.url,
+        displayUrl: result.data.display_url,
+        thumbUrl: result.data.thumb.url,
+        deleteUrl: result.data.delete_url,
+      };
+    } catch (error) {
+      console.error('ImgBB upload error:', error);
+      throw new Error(`Image upload failed: ${error.message}`);
+    }
+  };
+
   const uploadImages = async (auctionId) => {
-    const imageUrls = [];
+    const imageData = [];
+    const failedUploads = [];
     
     for (let i = 0; i < images.length; i++) {
       try {
         const image = images[i];
         setUploadProgress(((i + 1) / images.length) * 100);
         
-        // Create a blob from the image URI
-        const response = await fetch(image.uri);
-        if (!response.ok) {
-          throw new Error(`Failed to fetch image: ${response.status}`);
+        if (!image.base64) {
+          throw new Error('No base64 data available for image');
         }
-        
-        const blob = await response.blob();
-        
-        // Validate blob
-        if (!blob || blob.size === 0) {
-          throw new Error('Invalid image data');
-        }
-        
-        // Create unique filename with better naming
+
+        // Create filename with auction context
         const timestamp = Date.now();
         const fileExtension = image.uri.split('.').pop()?.toLowerCase() || 'jpg';
-        const fileName = `image_${timestamp}_${i}.${fileExtension}`;
-        const imageRef = storageRef(storage, `auctions/${auctionId}/${fileName}`);
+        const filename = `auction_${auctionId}_${timestamp}_${i}`;
         
-        // Upload with metadata
-        const metadata = {
-          contentType: `image/${fileExtension}`,
-          customMetadata: {
-            uploadedBy: auth.currentUser?.uid || 'unknown',
-            uploadedAt: new Date().toISOString(),
-            originalName: image.fileName || `image_${i}`
-          }
-        };
+        const uploadResult = await uploadImageToImgBB(image.base64, filename);
         
-        await uploadBytes(imageRef, blob, metadata);
-        const url = await getDownloadURL(imageRef);
-        imageUrls.push(url);
+        imageData.push({
+          url: uploadResult.url,
+          displayUrl: uploadResult.displayUrl,
+          thumbUrl: uploadResult.thumbUrl,
+          deleteUrl: uploadResult.deleteUrl,
+          originalName: image.fileName || `image_${i}`,
+          uploadedAt: new Date().toISOString(),
+          index: i
+        });
         
-        console.log(`Successfully uploaded image ${i + 1}/${images.length}`);
+        console.log(`Successfully uploaded image ${i + 1}/${images.length} to ImgBB`);
         
       } catch (error) {
         console.error(`Error uploading image ${i}:`, error);
-        
-        // Show specific error message
-        Alert.alert(
-          'Upload Warning', 
-          `Failed to upload image ${i + 1}. The auction will be created with the successfully uploaded images.`
-        );
-        
-        // Continue with other images even if one fails
+        failedUploads.push({ index: i, error: error.message });
       }
     }
     
     setUploadProgress(0);
-    return imageUrls;
+    
+    // Warn about failed uploads but don't block auction creation
+    if (failedUploads.length > 0) {
+      const failedCount = failedUploads.length;
+      const successCount = imageData.length;
+      Alert.alert(
+        'Upload Warning', 
+        `${failedCount} image(s) failed to upload. Proceeding with ${successCount} successfully uploaded image(s).`
+      );
+    }
+    
+    return imageData;
   };
 
   const validateForm = () => {
@@ -140,14 +167,29 @@ export default function CreateAuction() {
       return false;
     }
     
+    if (formData.title.trim().length < 3) {
+      Alert.alert('Validation Error', 'Auction title must be at least 3 characters long');
+      return false;
+    }
+    
     if (!formData.description.trim()) {
       Alert.alert('Validation Error', 'Please enter a description');
+      return false;
+    }
+    
+    if (formData.description.trim().length < 10) {
+      Alert.alert('Validation Error', 'Description must be at least 10 characters long');
       return false;
     }
     
     const bidValue = parseFloat(formData.startingBid);
     if (!formData.startingBid || isNaN(bidValue) || bidValue <= 0) {
       Alert.alert('Validation Error', 'Please enter a valid starting bid amount');
+      return false;
+    }
+    
+    if (bidValue < 0.01) {
+      Alert.alert('Validation Error', 'Starting bid must be at least $0.01');
       return false;
     }
     
@@ -171,24 +213,25 @@ export default function CreateAuction() {
     }
 
     setLoading(true);
+    let auctionRef = null;
     
     try {
-      // Create auction reference
-      const auctionRef = push(ref(rtdb, 'auctions'));
+      // Create auction reference first
+      auctionRef = push(ref(rtdb, 'auctions'));
       const auctionId = auctionRef.key;
 
-      // Upload images if any
-      let imageUrls = [];
+      // Upload images to ImgBB if any
+      let imageData = [];
       if (images.length > 0) {
-        console.log(`Starting upload of ${images.length} images...`);
-        imageUrls = await uploadImages(auctionId);
-        console.log(`Successfully uploaded ${imageUrls.length} images`);
+        console.log(`Starting upload of ${images.length} images to ImgBB...`);
+        imageData = await uploadImages(auctionId);
+        console.log(`Successfully uploaded ${imageData.length} images to ImgBB`);
       }
 
       // Calculate end time
       const endTime = Date.now() + (parseInt(formData.duration) * 60 * 1000);
       
-      // Prepare auction data
+      // Prepare auction data with ImgBB image data
       const auctionData = {
         id: auctionId,
         title: formData.title.trim(),
@@ -197,8 +240,8 @@ export default function CreateAuction() {
         currentBid: parseFloat(formData.startingBid),
         category: formData.category,
         condition: formData.condition,
-        images: imageUrls, // This will be an array of URLs
-        imageCount: imageUrls.length, // Add image count for easy reference
+        images: imageData, // Array of ImgBB image objects
+        imageCount: imageData.length,
         auctioneerId: user.uid,
         auctioneerName: user.displayName || user.email?.split('@')[0] || 'Anonymous',
         auctioneerEmail: user.email,
@@ -211,13 +254,17 @@ export default function CreateAuction() {
         totalBids: 0,
         highestBidder: null,
         watchers: {},
-        views: 0
+        views: 0,
+        // Additional metadata
+        platform: Platform.OS,
+        version: '1.0.0',
+        imageProvider: 'imgbb'
       };
 
-      // Save auction to database
+      // Save auction to Firebase Realtime Database
       await set(auctionRef, auctionData);
 
-      // Also add to user's auctions list for easy querying
+      // Add to user's auctions list for efficient querying
       const userAuctionRef = ref(rtdb, `users/${user.uid}/auctions/${auctionId}`);
       await set(userAuctionRef, {
         auctionId: auctionId,
@@ -225,12 +272,18 @@ export default function CreateAuction() {
         status: 'active',
         createdAt: serverTimestamp(),
         endTime: endTime,
-        imageCount: imageUrls.length
+        imageCount: imageData.length,
+        startingBid: parseFloat(formData.startingBid)
       });
+
+      // Success handling
+      const successMessage = imageData.length > 0 
+        ? `Auction created successfully with ${imageData.length} image(s)!`
+        : 'Auction created successfully!';
 
       Alert.alert(
         'Success', 
-        `Auction created successfully with ${imageUrls.length} image(s)!`, 
+        successMessage,
         [
           { 
             text: 'OK', 
@@ -254,17 +307,24 @@ export default function CreateAuction() {
     } catch (error) {
       console.error('Error creating auction:', error);
       
+      // Enhanced error handling with specific ImgBB and Firebase errors
       let errorMessage = 'Failed to create auction. Please try again.';
       
-      if (error.code === 'storage/unauthorized') {
-        errorMessage = 'Permission denied. Please check your Firebase storage rules.';
+      if (error.message.includes('Image upload failed')) {
+        errorMessage = 'Failed to upload images. Please check your internet connection and try again.';
       } else if (error.code === 'database/permission-denied') {
         errorMessage = 'Database permission denied. Please check your Firebase database rules.';
       } else if (error.code === 'auth/user-not-found') {
         errorMessage = 'User not authenticated. Please log in again.';
-      } else if (error.code === 'storage/quota-exceeded') {
-        errorMessage = 'Storage quota exceeded. Please try with fewer or smaller images.';
+      } else if (error.message.includes('Network')) {
+        errorMessage = 'Network error. Please check your internet connection.';
+      } else if (error.message.includes('quota')) {
+        errorMessage = 'Upload quota exceeded. Please try again later.';
       }
+      
+      // If auction was partially created, we should ideally clean up
+      // This is a limitation of using external services - consider implementing
+      // a cleanup mechanism or transaction-like behavior
       
       Alert.alert('Error', errorMessage);
     } finally {
@@ -321,7 +381,7 @@ export default function CreateAuction() {
               placeholder="0.00"
               value={formData.startingBid}
               onChangeText={(text) => {
-                // Only allow numbers and one decimal point
+                // Enhanced input validation for currency
                 const cleanedText = text.replace(/[^0-9.]/g, '');
                 const parts = cleanedText.split('.');
                 if (parts.length > 2) {
@@ -436,7 +496,7 @@ export default function CreateAuction() {
             {/* Upload Progress */}
             {loading && uploadProgress > 0 && (
               <View style={styles.progressContainer}>
-                <Text style={styles.progressText}>Uploading images... {Math.round(uploadProgress)}%</Text>
+                <Text style={styles.progressText}>Uploading to ImgBB... {Math.round(uploadProgress)}%</Text>
                 <View style={styles.progressBar}>
                   <View style={[styles.progressFill, { width: `${uploadProgress}%` }]} />
                 </View>
