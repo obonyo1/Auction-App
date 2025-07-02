@@ -462,7 +462,7 @@ export default function CreateAuction() {
             <Text style={styles.label}>Auction Duration</Text>
             <View style={styles.durationContainer}>
               {[
-                { value: '30', label: '30m' },
+                { value: '5', label: '5m' },
                 { value: '60', label: '1h' },
                 { value: '120', label: '2h' },
                 { value: '240', label: '4h' },

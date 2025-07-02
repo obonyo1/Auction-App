@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useRef } from 'react';
 import { 
   View, 
   Image, 
@@ -7,18 +7,15 @@ import {
   StyleSheet, 
   TouchableOpacity, 
   ActivityIndicator,
-  TextInput // Import TextInput
+  TextInput,
+  Alert,
+  Animated
 } from 'react-native';
 import { Stack, router } from 'expo-router';
-import { 
-  getDatabase, 
-  ref, 
-  onValue, 
-  // update, // Not used in this version, can be removed
-  // off // Not used in this version, can be removed
-} from 'firebase/database';
+import { getDatabase, ref, onValue } from 'firebase/database';
+import ConfettiCannon from 'react-native-confetti-cannon';
+import { useAuth } from './context/authContext';
 
-// Item type remains the same
 type Item = {
   id: string;
   title: string;
@@ -33,80 +30,116 @@ type Item = {
   category: string;
   condition: string;
   auctioneerName: string;
+  winnerId?: string;
+  paymentInfo?: {
+    hasPaid: boolean;
+  };
 };
 
-// --- NEW: Define categories for filtering ---
-// Add an 'All' option to reset the filter
 const CATEGORIES = ['All', 'Electronics', 'Fashion', 'Home & Garden', 'Sports', 'Collectibles', 'Other'];
 
 export default function bidderHome() {
   const [items, setItems] = useState<Item[]>([]);
   const [loading, setLoading] = useState(true);
-
-  // --- NEW: State for search and filtering ---
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedCategory, setSelectedCategory] = useState('All');
   const [filteredItems, setFilteredItems] = useState<Item[]>([]);
+  const [wonAuctions, setWonAuctions] = useState<Item[]>([]);
+  const [showConfetti, setShowConfetti] = useState(false);
+  const { userId } = useAuth();
+  const pulseAnim = useRef(new Animated.Value(1)).current;
 
-  // This useEffect fetches all active auctions and stores them in the `items` state
   useEffect(() => {
     const db = getDatabase();
     const auctionsRef = ref(db, 'auctions');
 
-    const unsubscribe = onValue(
-      auctionsRef,
-      (snapshot) => {
-        const loadedItems: Item[] = [];
+    const unsubscribe = onValue(auctionsRef, (snapshot) => {
+      const loadedItems: Item[] = [];
+      const newlyWonAuctions: Item[] = [];
+      const currentTime = Date.now();
+      
+      if (snapshot.exists()) {
+        const data = snapshot.val();
         
-        if (snapshot.exists()) {
-          const data = snapshot.val();
-          const currentTime = Date.now();
-          
-          Object.keys(data).forEach((key) => {
-            const auction = data[key];
-            const isActiveAndNotEnded = auction.status === 'active' && auction.endTime > currentTime;
-            
-            if (isActiveAndNotEnded) {
-              loadedItems.push({
-                id: key,
-                title: auction.title || 'Untitled Auction',
-                images: auction.images || [],
-                description: auction.description || 'No description available',
-                startingBid: auction.startingBid || 0,
-                currentBid: auction.currentBid || auction.startingBid || 0,
-                status: auction.status,
-                endTime: auction.endTime,
-                createdAt: auction.createdAt || Date.now(),
-                auctioneerId: auction.auctioneerId || '',
-                category: auction.category || 'Uncategorized',
-                condition: auction.condition || 'Unknown',
-                auctioneerName: auction.auctioneerName || 'Anonymous'
-              });
-            }
-          });
-          
-          loadedItems.sort((a, b) => a.endTime - b.endTime);
+        Object.keys(data).forEach((key) => {
+          const auction = data[key];
+          const item = {
+            id: key,
+            title: auction.title || 'Untitled Auction',
+            images: auction.images || [],
+            description: auction.description || 'No description available',
+            startingBid: auction.startingBid || 0,
+            currentBid: auction.currentBid || auction.startingBid || 0,
+            status: auction.status,
+            endTime: auction.endTime,
+            createdAt: auction.createdAt || Date.now(),
+            auctioneerId: auction.auctioneerId || '',
+            category: auction.category || 'Uncategorized',
+            condition: auction.condition || 'Unknown',
+            auctioneerName: auction.auctioneerName || 'Anonymous',
+            winnerId: auction.winnerId,
+            paymentInfo: auction.paymentInfo || { hasPaid: false }
+          };
+
+          // Check if auction is won by current user and not paid
+          if (auction.winnerId === userId && 
+              auction.status === 'completed' && 
+              (!auction.paymentInfo || !auction.paymentInfo.hasPaid)) {
+            newlyWonAuctions.push(item);
+          }
+
+          // Only show active auctions in the main list
+          if (auction.status === 'active' && auction.endTime > currentTime) {
+            loadedItems.push(item);
+          }
+        });
+
+        // Check if there are new wins
+        if (newlyWonAuctions.length > wonAuctions.length) {
+          setShowConfetti(true);
+          setTimeout(() => setShowConfetti(false), 5000);
+          triggerPulseAnimation();
         }
-        
+
+        setWonAuctions(newlyWonAuctions);
+        loadedItems.sort((a, b) => a.endTime - b.endTime);
         setItems(loadedItems);
-        setLoading(false);
-      },
-      (error) => {
-        console.error('Realtime Database error:', error);
-        setLoading(false);
       }
-    );
+      
+      setLoading(false);
+    });
 
-    return () => {
-      unsubscribe();
-    };
-  }, []);
+    return () => unsubscribe();
+  }, [userId]);
 
-  // --- NEW: This useEffect filters the items whenever the search query, category, or master items list changes ---
+  const triggerPulseAnimation = () => {
+    Animated.sequence([
+      Animated.timing(pulseAnim, {
+        toValue: 1.2,
+        duration: 200,
+        useNativeDriver: true,
+      }),
+      Animated.timing(pulseAnim, {
+        toValue: 1,
+        duration: 200,
+        useNativeDriver: true,
+      }),
+      Animated.timing(pulseAnim, {
+        toValue: 1.1,
+        duration: 100,
+        useNativeDriver: true,
+      }),
+      Animated.timing(pulseAnim, {
+        toValue: 1,
+        duration: 100,
+        useNativeDriver: true,
+      }),
+    ]).start();
+  };
+
   useEffect(() => {
     let updatedItems = [...items];
-
-    // 1. Filter by search query (checks title and description)
+    
     if (searchQuery.trim()) {
       const lowercasedQuery = searchQuery.toLowerCase();
       updatedItems = updatedItems.filter(item =>
@@ -115,7 +148,6 @@ export default function bidderHome() {
       );
     }
 
-    // 2. Filter by category
     if (selectedCategory !== 'All') {
       updatedItems = updatedItems.filter(item => item.category === selectedCategory);
     }
@@ -123,92 +155,122 @@ export default function bidderHome() {
     setFilteredItems(updatedItems);
   }, [searchQuery, selectedCategory, items]);
 
+  const unpaidCount = wonAuctions.filter(a => !a.paymentInfo?.hasPaid).length;
+
   const handleCartPress = () => {
-    router.push('/checkout' as any);
+    if (unpaidCount > 0) {
+      Alert.alert(
+        'Pending Payments',
+        `You have ${unpaidCount} unpaid auction(s). Complete your payments in the checkout screen.`,
+        [
+          { text: 'Later', style: 'cancel' },
+          { text: 'Go to Checkout', onPress: () => router.push('/checkout') }
+        ]
+      );
+    } else {
+      router.push('/checkout');
+    }
   };
 
   const formatTimeLeft = (endTime: number) => {
-    // ... (your existing formatTimeLeft function, no changes needed)
     const now = Date.now();
     const timeLeft = endTime - now;
     if (timeLeft <= 0) return 'Ended';
     const days = Math.floor(timeLeft / (1000 * 60 * 60 * 24));
     const hours = Math.floor((timeLeft % (1000 * 60 * 60 * 24)) / (1000 * 60 * 60));
     const minutes = Math.floor((timeLeft % (1000 * 60 * 60)) / (1000 * 60));
-    const seconds = Math.floor((timeLeft % (1000 * 60)) / 1000);
     if (days > 0) return `${days}d ${hours}h left`;
     if (hours > 0) return `${hours}h ${minutes}m left`;
-    if (minutes > 0) return `${minutes}m left`;
-    return `${seconds}s left`;
+    return `${minutes}m left`;
   };
 
   const handleAuctionPress = (auctionId: string) => {
     router.push(`/auctionDetails?id=${auctionId}`);
   };
 
-// Updated function to handle ImgBB image objects with proper null checks
-const getDisplayImage = (images: Item['images']) => {
-  // Return null immediately if no images or empty array
-  if (!images || !Array.isArray(images) || images.length === 0) {
-    return null;
-  }
-  
-  const firstImage = images[0];
-  
-  // Handle null or undefined entries
-  if (!firstImage) {
-    return null;
-  }
-  
-  // Handle ImgBB object format - check for specific properties to confirm it's an ImgBB object
-  if (typeof firstImage === 'object' && 
-      firstImage !== null && 
-      !Array.isArray(firstImage) && 
-      ('url' in firstImage || 'displayUrl' in firstImage || 'thumbUrl' in firstImage)) {
+  const getDisplayImage = (images: Item['images']) => {
+    if (!images || !Array.isArray(images) || images.length === 0) return null;
+    const firstImage = images[0];
+    if (!firstImage) return null;
     
-    // Prefer displayUrl for better quality, fallback to url, then thumbUrl
-    const imageUrl = firstImage.displayUrl || firstImage.url || firstImage.thumbUrl;
+    if (typeof firstImage === 'object' && 
+        !Array.isArray(firstImage) && 
+        ('url' in firstImage || 'displayUrl' in firstImage || 'thumbUrl' in firstImage)) {
+      const imageUrl = firstImage.displayUrl || firstImage.url || firstImage.thumbUrl;
+      if (typeof imageUrl === 'string' && imageUrl.trim().length > 0) {
+        return imageUrl;
+      }
+      return null;
+    }
     
-    // Ensure we're returning a string, not another object
-    if (typeof imageUrl === 'string' && imageUrl.trim().length > 0) {
-      return imageUrl;
+    if (typeof firstImage === 'string' && firstImage.trim().length > 0) {
+      return firstImage;
     }
     
     return null;
-  }
-  
-  // Handle legacy string format (backward compatibility)
-  if (typeof firstImage === 'string' && firstImage.trim().length > 0) {
-    return firstImage;
-  }
-  
-  // If we get here, the data format is unexpected
-  console.warn('Unexpected image format:', firstImage);
-  return null;
-};
+  };
 
   return (
     <>
       <Stack.Screen options={{ headerShown: false }} />
+      
+      {showConfetti && (
+        <ConfettiCannon
+          count={200}
+          origin={{ x: -10, y: 0 }}
+          fadeOut={true}
+          autoStart={true}
+        />
+      )}
+
       <ScrollView style={styles.scroll}>
         <View style={styles.container}>
-          {/* Header with Cart */}
+          {wonAuctions.length > 0 && (
+            <View style={styles.winningBanner}>
+              <Text style={styles.winningText}>
+                🎉 You've won {wonAuctions.length} auction(s)! {unpaidCount > 0 && `${unpaidCount} need payment.`}
+              </Text>
+            </View>
+          )}
+
           <View style={styles.header}>
             <Text style={styles.headerText}>Active Auctions</Text>
-            <TouchableOpacity 
-              style={styles.cartButton}
-              onPress={handleCartPress}
-            >
-              <View style={styles.cartIcon}>
-                <View style={styles.cartBody} />
-                <View style={styles.cartHandle} />
-                <View style={styles.cartWheel1} />
-                <View style={styles.cartWheel2} />
+            
+            {unpaidCount > 0 && (
+              <View style={styles.notificationTextContainer}>
+                <Text style={styles.notificationText}>
+                  {unpaidCount} unpaid
+                </Text>
               </View>
-            </TouchableOpacity>
+            )}
+            
+            <Animated.View style={{ transform: [{ scale: pulseAnim }] }}>
+              <TouchableOpacity 
+                style={styles.cartButton}
+                onPress={handleCartPress}
+              >
+                <View style={styles.cartIconContainer}>
+                  <View style={styles.cartIcon}>
+                    <View style={styles.cartBody} />
+                    <View style={styles.cartHandle} />
+                    <View style={styles.cartWheel1} />
+                    <View style={styles.cartWheel2} />
+                  </View>
+                  {unpaidCount > 0 && (
+                    <View style={[
+                      styles.badge,
+                      unpaidCount > 9 && styles.badgeLarge
+                    ]}>
+                      <Text style={styles.badgeText}>
+                        {unpaidCount > 9 ? '9+' : unpaidCount}
+                      </Text>
+                    </View>
+                  )}
+                </View>
+              </TouchableOpacity>
+            </Animated.View>
           </View>
           
-          {/* --- NEW: Search Bar --- */}
           <View style={styles.searchContainer}>
             <TextInput
               style={styles.searchInput}
@@ -219,7 +281,6 @@ const getDisplayImage = (images: Item['images']) => {
             />
           </View>
           
-          {/* --- NEW: Category Filter --- */}
           <View style={styles.categoryFilterContainer}>
             <ScrollView horizontal showsHorizontalScrollIndicator={false}>
               {CATEGORIES.map(category => (
@@ -242,8 +303,11 @@ const getDisplayImage = (images: Item['images']) => {
             </ScrollView>
           </View>
 
-          {/* --- UPDATED: Conditional Rendering for "No Items" --- */}
-          {items.length === 0 ? (
+          {loading ? (
+            <View style={styles.loadingContainer}>
+              <ActivityIndicator size="large" color="#007bff" />
+            </View>
+          ) : items.length === 0 ? (
             <View style={styles.noItemsContainer}>
               <Text style={styles.noItemsText}>No active auctions available right now.</Text>
             </View>
@@ -253,7 +317,6 @@ const getDisplayImage = (images: Item['images']) => {
               <Text style={styles.debugText}>Try changing your search or category filter.</Text>
             </View>
           ) : (
-            // --- UPDATED: Map over `filteredItems` instead of `items` ---
             filteredItems.map((item) => {
               const displayImage = getDisplayImage(item.images);
               return (
@@ -299,27 +362,20 @@ const getDisplayImage = (images: Item['images']) => {
   );
 }
 
-// --- UPDATED: Add new styles for search and filter UI ---
 const styles = StyleSheet.create({
-  // ... (keep all your existing styles)
   scroll: {
     flex: 1,
     backgroundColor: '#F8F9FA',
   },
   container: {
-    paddingBottom: 16, // Use paddingBottom instead of padding to allow full-width elements
+    paddingBottom: 16,
     alignItems: 'center',
   },
   loadingContainer: {
     flex: 1,
     justifyContent: 'center',
     alignItems: 'center',
-    backgroundColor: '#F8F9FA',
-  },
-  loadingText: {
-    fontSize: 16,
-    color: '#666',
-    marginTop: 10,
+    paddingVertical: 50,
   },
   header: {
     flexDirection: 'row',
@@ -336,11 +392,21 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   cartButton: {
-    width: 40,
-    height: 40,
+    width: 50,
+    height: 50,
     justifyContent: 'center',
     alignItems: 'center',
     padding: 8,
+    position: 'relative',
+    backgroundColor: '#f8f9fa',
+    borderRadius: 25,
+    borderWidth: 1,
+    borderColor: '#e1e5e9',
+  },
+  cartIconContainer: {
+    position: 'relative',
+    width: 24,
+    height: 20,
   },
   cartIcon: {
     width: 24,
@@ -386,7 +452,42 @@ const styles = StyleSheet.create({
     bottom: 0,
     right: 4,
   },
-  // --- NEW STYLES START HERE ---
+  badge: {
+    position: 'absolute',
+    right: -12,
+    top: -12,
+    backgroundColor: '#FF3B30',
+    borderRadius: 12,
+    minWidth: 24,
+    height: 24,
+    justifyContent: 'center',
+    alignItems: 'center',
+    zIndex: 1,
+    borderWidth: 2,
+    borderColor: '#fff',
+  },
+  badgeLarge: {
+    minWidth: 28,
+    paddingHorizontal: 4,
+  },
+  badgeText: {
+    color: 'white',
+    fontSize: 12,
+    fontWeight: 'bold',
+    textAlign: 'center',
+  },
+  notificationTextContainer: {
+    backgroundColor: '#FF3B30',
+    borderRadius: 12,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    marginRight: 8,
+  },
+  notificationText: {
+    color: 'white',
+    fontSize: 12,
+    fontWeight: 'bold',
+  },
   searchContainer: {
     width: '95%',
     marginBottom: 16,
@@ -426,7 +527,6 @@ const styles = StyleSheet.create({
   selectedCategoryButtonText: {
     color: '#fff',
   },
-  // --- NEW STYLES END HERE ---
   card: {
     width: '95%',
     backgroundColor: '#fff',
@@ -570,5 +670,18 @@ const styles = StyleSheet.create({
     color: '#999',
     textAlign: 'center',
     fontStyle: 'italic',
+  },
+  winningBanner: {
+    backgroundColor: '#4CAF50',
+    padding: 15,
+    borderRadius: 8,
+    marginBottom: 20,
+    width: '95%',
+  },
+  winningText: {
+    color: 'white',
+    fontSize: 16,
+    fontWeight: 'bold',
+    textAlign: 'center',
   },
 });

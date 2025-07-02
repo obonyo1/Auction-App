@@ -23,7 +23,8 @@ import {
   query, 
   orderByChild, 
   equalTo,
-  update
+  update,
+  remove
 } from 'firebase/database';
 
 interface WonAuction {
@@ -37,6 +38,7 @@ interface WonAuction {
   auctioneerName: string;
   images?: string;
   paymentStatus: 'pending' | 'paid' | 'processing';
+  hiddenFromHistory?: boolean;
 }
 
 interface CurrentUser {
@@ -52,25 +54,15 @@ interface PaymentModalData {
 }
 
 // M-Pesa Daraja API configuration
-// TODO: Replace these with your actual Daraja app credentials
+// SECURITY WARNING: These credentials should be moved to a secure backend server
 const MPESA_CONFIG = {
-  // Get these from your Daraja app dashboard
-  consumerKey: 'esS27JygO5uNE9XdGy1nem1XyrhUeMo8KmvAtfGzrladrngP', // TODO: Replace with your consumer key
-  consumerSecret: '3uY78bYqnE7BuxayL3gtVqz0gASYhfJe7J9o36TPKf04WCqfonTMdFv88s3c9ADN', // TODO: Replace with your consumer secret
-  
-  // For sandbox testing use '174379', for production use your registered short code
-  businessShortCode: '174379', // TODO: Replace with your production short code when going live
-  
-  // Sandbox passkey (for production, get your own from Daraja)
+  consumerKey: 'esS27JygO5uNE9XdGy1nem1XyrhUeMo8KmvAtfGzrladrngP',
+  consumerSecret: '3uY78bYqnE7BuxayL3gtVqz0gASYhfJe7J9o36TPKf04WCqfonTMdFv88s3c9ADN',
+  businessShortCode: '174379',
   passkey: 'bfb279f9aa9bdbcf158e97dd71a467cd2e0c893059b10f78e6b72ada1ed2c919',
-  
-  // API endpoints
-  baseUrl: 'https://sandbox.safaricom.co.ke', // TODO: Change to 'https://api.safaricom.co.ke' for production
-  
-  // Your backend callback URL - deploy the backend first, then update this
-  callbackUrl: 'https://your-backend-url.herokuapp.com/mpesa/callback', // TODO: Replace with your deployed backend URL
-  
-  environment: 'sandbox' // TODO: Change to 'production' when going live
+  baseUrl: 'https://sandbox.safaricom.co.ke',
+  callbackUrl: 'https://your-backend-url.herokuapp.com/mpesa/callback',
+  environment: 'sandbox'
 };
 
 export default function Checkout() {
@@ -87,6 +79,7 @@ export default function Checkout() {
   });
   const [phoneNumber, setPhoneNumber] = useState<string>('');
   const [isProcessingPayment, setIsProcessingPayment] = useState<boolean>(false);
+  const [deletingAuctions, setDeletingAuctions] = useState<Set<string>>(new Set());
 
   // Firebase Auth listener
   useEffect(() => {
@@ -167,6 +160,11 @@ export default function Checkout() {
             Object.keys(data).forEach((key) => {
               const auction = data[key];
               
+              // Skip if auction is hidden from history
+              if (auction.hiddenFromHistory) {
+                return;
+              }
+              
               // Check if auction has ended
               const hasEnded = auction.endTime <= currentTime || auction.status === 'completed';
               
@@ -186,13 +184,14 @@ export default function Checkout() {
                     id: key,
                     title: auction.title || 'Unknown Product',
                     description: auction.description || 'No description',
-                    category: auction.category || 'Uncategorized',
+                    category: auction.category || 'Uncategorised',
                     finalBid: bidsList[0].amount,
                     endTime: auction.endTime || Date.now(),
                     auctioneerId: auction.auctioneerId,
                     auctioneerName: auction.auctioneerName || 'Anonymous',
                     images: auction.images || '',
-                    paymentStatus: auction.paymentStatus || 'pending'
+                    paymentStatus: auction.paymentStatus || 'pending',
+                    hiddenFromHistory: auction.hiddenFromHistory || false
                   });
                 }
               }
@@ -282,6 +281,61 @@ export default function Checkout() {
     } catch (error) {
       console.error('Error updating payment status:', error);
     }
+  };
+
+  // Hide auction from history (soft delete)
+  const hideAuctionFromHistory = async (auctionId: string) => {
+    try {
+      setDeletingAuctions(prev => new Set([...prev, auctionId]));
+      
+      const db = getDatabase();
+      const auctionRef = ref(db, `auctions/${auctionId}`);
+      
+      // Set hiddenFromHistory flag instead of deleting the record
+      await update(auctionRef, { 
+        hiddenFromHistory: true,
+        hiddenAt: Date.now(),
+        hiddenBy: currentUser?.id
+      });
+      
+      console.log(`Auction ${auctionId} hidden from history`);
+    } catch (error) {
+      console.error('Error hiding auction from history:', error);
+      Alert.alert('Error', 'Failed to remove auction from history. Please try again.');
+    } finally {
+      setDeletingAuctions(prev => {
+        const newSet = new Set(prev);
+        newSet.delete(auctionId);
+        return newSet;
+      });
+    }
+  };
+
+  // Handle delete auction with confirmation
+  const handleDeleteAuction = (auctionId: string, title: string, paymentStatus: string) => {
+    if (paymentStatus !== 'paid') {
+      Alert.alert(
+        'Cannot Delete',
+        'Only paid auctions can be removed from history. Please complete payment first.'
+      );
+      return;
+    }
+
+    Alert.alert(
+      'Remove from History',
+      `Are you sure you want to remove "${title}" from your checkout history? This action cannot be undone.`,
+      [
+        {
+          text: 'Cancel',
+          style: 'cancel'
+        },
+        {
+          text: 'Remove',
+          style: 'destructive',
+          onPress: () => hideAuctionFromHistory(auctionId)
+        }
+      ]
+    );
   };
 
   // Initiate M-Pesa STK Push with Daraja API
@@ -549,8 +603,25 @@ export default function Checkout() {
       <View style={styles.auctionContent}>
         <View style={styles.productHeader}>
           <Text style={styles.productName}>{item.title}</Text>
-          <View style={[styles.statusBadge, { backgroundColor: getPaymentStatusColor(item.paymentStatus) }]}>
-            <Text style={styles.statusText}>{getPaymentStatusText(item.paymentStatus)}</Text>
+          <View style={styles.statusAndActions}>
+            <View style={[styles.statusBadge, { backgroundColor: getPaymentStatusColor(item.paymentStatus) }]}>
+              <Text style={styles.statusText}>{getPaymentStatusText(item.paymentStatus)}</Text>
+            </View>
+            
+            {/* Delete button - only show for paid auctions */}
+            {item.paymentStatus === 'paid' && (
+              <TouchableOpacity
+                style={[styles.deleteButton, deletingAuctions.has(item.id) && styles.deletingButton]}
+                onPress={() => handleDeleteAuction(item.id, item.title, item.paymentStatus)}
+                disabled={deletingAuctions.has(item.id)}
+              >
+                {deletingAuctions.has(item.id) ? (
+                  <ActivityIndicator size="small" color="#fff" />
+                ) : (
+                  <Text style={styles.deleteButtonText}>×</Text>
+                )}
+              </TouchableOpacity>
+            )}
           </View>
         </View>
         
