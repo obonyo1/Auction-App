@@ -13,10 +13,11 @@ import {
   Dimensions
 } from 'react-native';
 import { useRouter, Stack } from 'expo-router';
-import { collection, getDocs, query, where, deleteDoc, doc } from 'firebase/firestore';
 import { Ionicons } from '@expo/vector-icons';
 import Svg, { Line, Circle, Text as SvgText, G } from 'react-native-svg';
-import { db } from './firebase/firebaseConfig'; // Adjust the import path to your Firestore config
+import { ref, onValue, off, remove } from 'firebase/database';
+import { collection, onSnapshot, doc, deleteDoc, query, where, getDocs } from 'firebase/firestore';
+import { rtdb, db } from './firebase/firebaseConfig'; // Import both databases
 
 const { width: screenWidth } = Dimensions.get('window');
 
@@ -30,80 +31,201 @@ export default function AdminPanel() {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [deleting, setDeleting] = useState(null);
+  const [realTimeStats, setRealTimeStats] = useState({
+    activeAuctions: 0,
+    completedAuctions: 0,
+    totalBids: 0,
+    totalRevenue: 0
+  });
+
+  // Listener references for cleanup
+  const [listeners, setListeners] = useState({
+    auctionsListener: null,
+    usersListener: null
+  });
 
   useEffect(() => {
-    fetchUsers();
-    fetchAuctionsData();
+    // Set up real-time listeners for both databases
+    setupRealTimeListeners();
+    
+    // Cleanup listeners on unmount
+    return () => {
+      cleanupListeners();
+    };
   }, []);
 
-  const fetchUsers = async () => {
-    try {
-      const usersRef = collection(db, 'users');
-      const auctioneerQuery = query(usersRef, where('role', '==', 'auctioneer'));
-      const bidderQuery = query(usersRef, where('role', '==', 'bidder'));
-      
-      const [auctioneerSnap, bidderSnap] = await Promise.all([
-        getDocs(auctioneerQuery),
-        getDocs(bidderQuery)
-      ]);
+  const setupRealTimeListeners = () => {
+    // Listen for auction changes from Realtime Database
+    const auctionsRef = ref(rtdb, 'auctions');
+    const auctionsListener = onValue(auctionsRef, (snapshot) => {
+      if (snapshot.exists()) {
+        const auctionsData = snapshot.val();
+        processAuctionsData(auctionsData);
+      } else {
+        // No auctions exist
+        setAuctionsData(initializeWeeklyData());
+        setTotalAuctions(0);
+        setRealTimeStats({
+          activeAuctions: 0,
+          completedAuctions: 0,
+          totalBids: 0,
+          totalRevenue: 0
+        });
+      }
+      setLoading(false);
+      setRefreshing(false);
+    }, (error) => {
+      console.error('Error listening to auctions:', error);
+      Alert.alert('Error', 'Failed to load real-time auction data');
+      setLoading(false);
+      setRefreshing(false);
+    });
 
-      const auctioneerList = auctioneerSnap.docs.map(doc => ({ 
-        id: doc.id, 
-        ...doc.data() 
-      }));
-      
-      setAuctioneers(auctioneerList);
-      setAuctioneersCount(auctioneerSnap.size);
-      setBiddersCount(bidderSnap.size);
-    } catch (err) {
-      console.error('Error fetching users:', err);
-      Alert.alert('Error', 'Could not fetch users');
+    // Listen for user changes from Firestore
+    const usersRef = collection(db, 'users');
+    const usersListener = onSnapshot(usersRef, (snapshot) => {
+      try {
+        const usersList = [];
+        snapshot.forEach((doc) => {
+          usersList.push({
+            id: doc.id,
+            ...doc.data()
+          });
+        });
+        
+        const auctioneersList = usersList.filter(user => user.role === 'auctioneer');
+        const biddersCount = usersList.filter(user => user.role === 'bidder').length;
+        
+        setAuctioneers(auctioneersList);
+        setAuctioneersCount(auctioneersList.length);
+        setBiddersCount(biddersCount);
+        
+        // If this is the first load and auctions are already loaded, stop loading
+        if (loading && auctionsData.length > 0) {
+          setLoading(false);
+        }
+      } catch (error) {
+        console.error('Error processing users data:', error);
+        Alert.alert('Error', 'Failed to load user data');
+      }
+    }, (error) => {
+      console.error('Error listening to users:', error);
+      Alert.alert('Error', 'Failed to load real-time user data');
+      setLoading(false);
+      setRefreshing(false);
+    });
+
+    // Store listener references for cleanup
+    setListeners({
+      auctionsListener,
+      usersListener
+    });
+  };
+
+  const cleanupListeners = () => {
+    // Clean up Realtime Database listener
+    if (listeners.auctionsListener) {
+      const auctionsRef = ref(rtdb, 'auctions');
+      off(auctionsRef, 'value', listeners.auctionsListener);
+    }
+    
+    // Clean up Firestore listener
+    if (listeners.usersListener) {
+      listeners.usersListener();
     }
   };
 
-  const fetchAuctionsData = async () => {
+  const initializeWeeklyData = () => {
+    const daysOfWeek = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+    return daysOfWeek.map(day => ({ day, auctions: 0 }));
+  };
+
+  const processAuctionsData = (auctionsData) => {
     try {
-      const auctionsRef = collection(db, 'auctions');
-      const auctionsSnap = await getDocs(auctionsRef);
+      const auctions = Object.values(auctionsData);
       
-      // Initialize data for all days of the week
-      const daysOfWeek = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
-      const weeklyData = daysOfWeek.map(day => ({ day, auctions: 0 }));
+      // Initialize weekly data
+      const weeklyData = initializeWeeklyData();
       
-      let total = 0;
+      let totalAuctions = 0;
+      let activeAuctions = 0;
+      let completedAuctions = 0;
+      let totalBids = 0;
+      let totalRevenue = 0;
       
-      // Process auctions and count by day of week
-      auctionsSnap.docs.forEach(doc => {
-        const auction = doc.data();
+      const now = Date.now();
+      
+      // Process each auction
+      auctions.forEach(auction => {
+        totalAuctions += 1;
+        
+        // Count by creation day
         if (auction.createdAt) {
-          const date = auction.createdAt.toDate ? auction.createdAt.toDate() : new Date(auction.createdAt);
-          const dayIndex = date.getDay(); // 0 = Sunday, 1 = Monday, etc.
+          let date;
+          if (typeof auction.createdAt === 'object' && auction.createdAt.seconds) {
+            // Firebase Timestamp
+            date = new Date(auction.createdAt.seconds * 1000);
+          } else if (typeof auction.createdAt === 'number') {
+            // Unix timestamp
+            date = new Date(auction.createdAt);
+          } else {
+            // Fallback
+            date = new Date(auction.createdAt);
+          }
+          
+          const dayIndex = date.getDay();
           weeklyData[dayIndex].auctions += 1;
-          total += 1;
+        }
+        
+        // Calculate auction status based on end time
+        const isActive = auction.endTime && now < auction.endTime;
+        if (isActive) {
+          activeAuctions += 1;
+        } else {
+          completedAuctions += 1;
+        }
+        
+        // Count bids
+        if (auction.totalBids) {
+          totalBids += auction.totalBids;
+        }
+        
+        // Calculate revenue (from completed auctions)
+        if (!isActive && auction.currentBid && auction.currentBid > auction.startingBid) {
+          totalRevenue += auction.currentBid;
         }
       });
       
+      // Update state
       setAuctionsData(weeklyData);
-      setTotalAuctions(total);
-    } catch (err) {
-      console.error('Error fetching auctions data:', err);
-      Alert.alert('Error', 'Could not fetch auctions data');
-    } finally {
-      setLoading(false);
-      setRefreshing(false);
+      setTotalAuctions(totalAuctions);
+      setRealTimeStats({
+        activeAuctions,
+        completedAuctions,
+        totalBids,
+        totalRevenue: Math.round(totalRevenue * 100) / 100 // Round to 2 decimal places
+      });
+      
+    } catch (error) {
+      console.error('Error processing auctions data:', error);
+      setAuctionsData(initializeWeeklyData());
+      setTotalAuctions(0);
     }
   };
 
   const onRefresh = () => {
     setRefreshing(true);
-    fetchUsers();
-    fetchAuctionsData();
+    // Real-time listeners will automatically update the data
+   
+    setTimeout(() => {
+      setRefreshing(false);
+    }, 1000);
   };
 
   const handleDeleteAuctioneer = async (userId, userEmail) => {
     Alert.alert(
       'Delete Auctioneer',
-      `Are you sure you want to permanently delete ${userEmail}?`,
+      `Are you sure you want to permanently delete ${userEmail}?\n\nThis will also delete all their auctions.`,
       [
         { 
           text: 'Cancel', 
@@ -115,9 +237,28 @@ export default function AdminPanel() {
           onPress: async () => {
             setDeleting(userId);
             try {
-              await deleteDoc(doc(db, 'users', userId));
-              fetchUsers();
-              Alert.alert('Success', 'Auctioneer deleted successfully');
+              // Delete user from Firestore
+              const userRef = doc(db, 'users', userId);
+              await deleteDoc(userRef);
+              
+              // Delete all auctions by this user from Realtime Database
+              const auctionsRef = ref(rtdb, 'auctions');
+              onValue(auctionsRef, async (snapshot) => {
+                if (snapshot.exists()) {
+                  const auctions = snapshot.val();
+                  const userAuctions = Object.entries(auctions).filter(
+                    ([_, auction]) => auction.auctioneerId === userId
+                  );
+                  
+                  // Delete each auction
+                  for (const [auctionId, _] of userAuctions) {
+                    const auctionRef = ref(rtdb, `auctions/${auctionId}`);
+                    await remove(auctionRef);
+                  }
+                }
+              }, { onlyOnce: true });
+              
+              Alert.alert('Success', 'Auctioneer and their auctions deleted successfully');
             } catch (err) {
               console.error('Delete error:', err);
               Alert.alert('Error', 'Failed to delete auctioneer');
@@ -132,16 +273,34 @@ export default function AdminPanel() {
 
   const formatDate = (timestamp) => {
     if (!timestamp) return 'Unknown';
-    const date = timestamp.toDate ? timestamp.toDate() : new Date(timestamp);
+    
+    let date;
+    if (typeof timestamp === 'object' && timestamp.seconds) {
+      // Firestore Timestamp
+      date = new Date(timestamp.seconds * 1000);
+    } else if (typeof timestamp === 'object' && timestamp.toDate) {
+      // Firestore Timestamp with toDate method
+      date = timestamp.toDate();
+    } else if (typeof timestamp === 'number') {
+      // Unix timestamp
+      date = new Date(timestamp);
+    } else {
+      // Fallback
+      date = new Date(timestamp);
+    }
+    
     return date.toLocaleDateString();
   };
 
-  const StatCard = ({ title, count, icon, color }) => (
+  const StatCard = ({ title, count, icon, color, subtitle }) => (
     <View style={[styles.statCard, { borderLeftColor: color }]}>
       <View style={styles.statContent}>
         <View style={styles.statTextContainer}>
           <Text style={styles.statTitle}>{title}</Text>
-          <Text style={[styles.statCount, { color }]}>{count}</Text>
+          <Text style={[styles.statCount, { color }]}>
+            {typeof count === 'number' && title.includes('Revenue') ? `$${count.toFixed(2)}` : count}
+          </Text>
+          {subtitle && <Text style={styles.statSubtitle}>{subtitle}</Text>}
         </View>
         <View style={[styles.statIcon, { backgroundColor: color + '15' }]}>
           <Ionicons name={icon} size={24} color={color} />
@@ -160,7 +319,7 @@ export default function AdminPanel() {
             </Text>
           </View>
           <View style={styles.userDetails}>
-            <Text style={styles.userName}>{user.username || 'No username'}</Text>
+            <Text style={styles.userName}>{user.username || user.displayName || 'No username'}</Text>
             <Text style={styles.userEmail}>{user.email || 'No email'}</Text>
             <Text style={styles.userMeta}>
               Joined: {formatDate(user.createdAt)}
@@ -207,7 +366,6 @@ export default function AdminPanel() {
     const padding = 40;
     const maxValue = Math.max(...data.map(d => d.auctions)) || 1;
     
-    // Calculate points for the line
     const points = data.map((item, index) => {
       const x = padding + (index * (chartWidth - 2 * padding)) / (data.length - 1);
       const y = chartHeight - padding - ((item.auctions / maxValue) * (chartHeight - 2 * padding));
@@ -217,7 +375,6 @@ export default function AdminPanel() {
     return (
       <View style={styles.chartSvgContainer}>
         <Svg width={chartWidth} height={chartHeight + 40}>
-          {/* Grid lines */}
           <G>
             {[0, 1, 2, 3, 4].map((i) => {
               const y = chartHeight - padding - (i * (chartHeight - 2 * padding)) / 4;
@@ -235,7 +392,6 @@ export default function AdminPanel() {
             })}
           </G>
           
-          {/* Main line */}
           <G>
             {points.slice(0, -1).map((point, index) => (
               <Line
@@ -250,7 +406,6 @@ export default function AdminPanel() {
             ))}
           </G>
           
-          {/* Data points */}
           <G>
             {points.map((point, index) => (
               <Circle
@@ -265,7 +420,6 @@ export default function AdminPanel() {
             ))}
           </G>
           
-          {/* Y-axis labels */}
           <G>
             {[0, 1, 2, 3, 4].map((i) => {
               const y = chartHeight - padding - (i * (chartHeight - 2 * padding)) / 4;
@@ -286,7 +440,6 @@ export default function AdminPanel() {
           </G>
         </Svg>
         
-        {/* X-axis labels (using regular Text components) */}
         <View style={styles.xAxisLabels}>
           {data.map((item, index) => (
             <View key={`x-label-${index}`} style={styles.xAxisLabel}>
@@ -310,7 +463,7 @@ export default function AdminPanel() {
         <Stack.Screen options={{ headerShown: true, title: 'Admin Panel' }} />
         <View style={styles.loadingContainer}>
           <ActivityIndicator size="large" color="#007BFF" />
-          <Text style={styles.loadingText}>Loading dashboard...</Text>
+          <Text style={styles.loadingText}>Loading real-time dashboard...</Text>
         </View>
       </SafeAreaView>
     );
@@ -337,11 +490,15 @@ export default function AdminPanel() {
       >
         {/* Header */}
         <View style={styles.header}>
-          <Text style={styles.title}>Dashboard Overview</Text>
-          <Text style={styles.subtitle}>Manage users and view statistics</Text>
+          <Text style={styles.title}>Real-time Dashboard</Text>
+          <Text style={styles.subtitle}>Live auction analytics and user management</Text>
+          <View style={styles.liveIndicator}>
+            <View style={styles.liveDot} />
+            <Text style={styles.liveText}>Live Updates</Text>
+          </View>
         </View>
 
-        {/* Statistics Cards */}
+        {/* Enhanced Statistics Cards */}
         <View style={styles.statsContainer}>
           <StatCard 
             title="Total Auctioneers" 
@@ -356,10 +513,30 @@ export default function AdminPanel() {
             color="#28A745"
           />
           <StatCard 
-            title="Total Auctions" 
-            count={totalAuctions} 
-            icon="stats-chart-outline"
+            title="Active Auctions" 
+            count={realTimeStats.activeAuctions} 
+            icon="time-outline"
+            color="#FF6B35"
+            subtitle="Currently running"
+          />
+          <StatCard 
+            title="Completed Auctions" 
+            count={realTimeStats.completedAuctions} 
+            icon="checkmark-circle-outline"
             color="#6F42C1"
+          />
+          <StatCard 
+            title="Total Bids" 
+            count={realTimeStats.totalBids} 
+            icon="trending-up-outline"
+            color="#17A2B8"
+          />
+          <StatCard 
+            title="Total Revenue" 
+            count={realTimeStats.totalRevenue} 
+            icon="cash-outline"
+            color="#28A745"
+            subtitle="From completed auctions"
           />
         </View>
 
@@ -368,21 +545,23 @@ export default function AdminPanel() {
           <View style={styles.sectionHeader}>
             <Text style={styles.sectionTitle}>Auction Analytics</Text>
             <Text style={styles.sectionSubtitle}>
-              Daily auction activity throughout the week
+              Daily auction creation activity • Updates automatically
             </Text>
           </View>
 
           <View style={styles.chartContainer}>
             <View style={styles.chartHeader}>
               <Ionicons name="analytics-outline" size={20} color="#007BFF" />
-              <Text style={styles.chartTitle}>Auctions by Day of Week</Text>
+              <Text style={styles.chartTitle}>Auctions Created by Day</Text>
+              <View style={styles.realTimeChartIndicator}>
+                <View style={styles.realTimeDot} />
+              </View>
             </View>
             
             <View style={styles.chartWrapper}>
               <CustomLineChart data={auctionsData} />
             </View>
 
-            {/* Chart Summary */}
             <View style={styles.chartSummary}>
               <View style={styles.summaryItem}>
                 <Text style={styles.summaryLabel}>Peak Day</Text>
@@ -393,9 +572,15 @@ export default function AdminPanel() {
                 </Text>
               </View>
               <View style={styles.summaryItem}>
-                <Text style={styles.summaryLabel}>Weekly Average</Text>
+                <Text style={styles.summaryLabel}>Daily Average</Text>
                 <Text style={styles.summaryValue}>
                   {(totalAuctions / 7).toFixed(1)}
+                </Text>
+              </View>
+              <View style={styles.summaryItem}>
+                <Text style={styles.summaryLabel}>This Week</Text>
+                <Text style={styles.summaryValue}>
+                  {totalAuctions}
                 </Text>
               </View>
             </View>
@@ -416,7 +601,7 @@ export default function AdminPanel() {
               <Ionicons name="people-outline" size={48} color="#CCC" />
               <Text style={styles.emptyStateText}>No auctioneers found</Text>
               <Text style={styles.emptyStateSubtext}>
-                Auctioneers will appear here once they register
+                Auctioneers will appear here automatically when they register
               </Text>
             </View>
           ) : (
@@ -464,6 +649,24 @@ const styles = StyleSheet.create({
   subtitle: {
     fontSize: 16,
     color: '#666',
+    marginBottom: 8,
+  },
+  liveIndicator: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginTop: 8,
+  },
+  liveDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    backgroundColor: '#28A745',
+    marginRight: 6,
+  },
+  liveText: {
+    fontSize: 14,
+    color: '#28A745',
+    fontWeight: '600',
   },
   statsContainer: {
     paddingHorizontal: 20,
@@ -498,6 +701,11 @@ const styles = StyleSheet.create({
   statCount: {
     fontSize: 32,
     fontWeight: 'bold',
+  },
+  statSubtitle: {
+    fontSize: 12,
+    color: '#999',
+    marginTop: 2,
   },
   statIcon: {
     width: 48,
@@ -543,6 +751,17 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     color: '#1A1A1A',
     marginLeft: 8,
+    flex: 1,
+  },
+  realTimeChartIndicator: {
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  realTimeDot: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+    backgroundColor: '#28A745',
   },
   chartWrapper: {
     marginBottom: 16,
