@@ -62,6 +62,24 @@ export default function AuctionDetailsPage() {
   const [placingBid, setPlacingBid] = useState(false);
   const [timeLeft, setTimeLeft] = useState('');
   const [currentUser, setCurrentUser] = useState<CurrentUser | null>(null);
+  const [auctionStatus, setAuctionStatus] = useState('active');
+
+  // Helper function to determine current status
+  const getCurrentAuctionStatus = (endTime: number) => {
+    return Date.now() >= endTime ? 'completed' : 'active';
+  };
+
+  // Function to update auction status in Firebase
+  const updateAuctionStatusInFirebase = async (auctionId: string, newStatus: string) => {
+    try {
+      const db = getDatabase();
+      const auctionStatusRef = ref(db, `auctions/${auctionId}/status`);
+      await set(auctionStatusRef, newStatus);
+      console.log(`Auction ${auctionId} status updated to: ${newStatus}`);
+    } catch (error) {
+      console.error('Error updating auction status:', error);
+    }
+  };
 
   // Updated function to handle flexible image formats
   const getDisplayImage = (imageData: string | string[] | any) => {
@@ -191,6 +209,19 @@ export default function AuctionDetailsPage() {
     };
   }, [id]);
 
+  // Effect to initialize status when auction loads
+  useEffect(() => {
+    if (auction) {
+      const currentStatus = getCurrentAuctionStatus(auction.endTime);
+      setAuctionStatus(currentStatus);
+      
+      // If the auction status in Firebase doesn't match current status, update it
+      if (auction.status !== currentStatus) {
+        updateAuctionStatusInFirebase(auction.id, currentStatus);
+      }
+    }
+  }, [auction]);
+
   // Update time left every second
   useEffect(() => {
     if (!auction) return;
@@ -199,8 +230,14 @@ export default function AuctionDetailsPage() {
       const now = Date.now();
       const timeRemaining = auction.endTime - now;
       
+      // Update auction status based on time remaining
+      const currentStatus = getCurrentAuctionStatus(auction.endTime);
+      setAuctionStatus(currentStatus);
+      
       if (timeRemaining <= 0) {
         setTimeLeft('Auction Ended');
+        // Update the auction status in Firebase when it ends
+        updateAuctionStatusInFirebase(auction.id, 'completed');
         return;
       }
       
@@ -235,6 +272,13 @@ export default function AuctionDetailsPage() {
       return;
     }
 
+    // Check if auction is still active based on current time
+    const currentStatus = getCurrentAuctionStatus(auction.endTime);
+    if (currentStatus === 'completed') {
+      Alert.alert('Auction Ended', 'This auction has already ended');
+      return;
+    }
+
     const bidValue = parseFloat(bidAmount);
     
     if (isNaN(bidValue) || bidValue <= auction.currentBid) {
@@ -244,11 +288,6 @@ export default function AuctionDetailsPage() {
 
     if (bidValue < auction.currentBid + 100) {
       Alert.alert('Bid Too Low', 'Minimum bid increment is Ksh 100');
-      return;
-    }
-
-    if (auction.endTime <= Date.now()) {
-      Alert.alert('Auction Ended', 'This auction has already ended');
       return;
     }
 
@@ -321,7 +360,7 @@ export default function AuctionDetailsPage() {
     );
   }
 
-  const isAuctionActive = auction.status === 'active' && auction.endTime > Date.now();
+  const isAuctionActive = auctionStatus === 'active' && auction && auction.endTime > Date.now();
   const displayImage = getDisplayImage(auction.images);
 
   return (
@@ -371,7 +410,7 @@ export default function AuctionDetailsPage() {
               {timeLeft}
             </Text>
             <Text style={styles.auctionStatus}>
-              Status: {auction.status === 'active' ? 'Active' : 'Ended'}
+              Status: {auctionStatus === 'active' ? 'Active' : 'Completed'}
             </Text>
           </View>
         </View>

@@ -37,6 +37,15 @@ export default function CreateAuction() {
   const categories = ['Electronics', 'Fashion', 'Home & Garden', 'Sports', 'Collectibles', 'Other'];
   const conditions = ['New', 'Like New', 'Good', 'Fair', 'Poor'];
 
+  // Helper function to determine auction status based on end time
+  const getAuctionStatus = (endTime) => {
+    const now = Date.now();
+    if (now >= endTime) {
+      return 'completed';
+    }
+    return 'active';
+  };
+
   const pickImage = async () => {
     try {
       const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
@@ -231,7 +240,7 @@ export default function CreateAuction() {
       // Calculate end time
       const endTime = Date.now() + (parseInt(formData.duration) * 60 * 1000);
       
-      // Prepare auction data with ImgBB image data
+      // Prepare auction data with dynamic status based on end time
       const auctionData = {
         id: auctionId,
         title: formData.title.trim(),
@@ -245,7 +254,7 @@ export default function CreateAuction() {
         auctioneerId: user.uid,
         auctioneerName: user.displayName || user.email?.split('@')[0] || 'Anonymous',
         auctioneerEmail: user.email,
-        status: 'active',
+        status: getAuctionStatus(endTime), // Dynamic status based on end time
         createdAt: serverTimestamp(),
         endTime: endTime,
         duration: parseInt(formData.duration),
@@ -264,12 +273,12 @@ export default function CreateAuction() {
       // Save auction to Firebase Realtime Database
       await set(auctionRef, auctionData);
 
-      // Add to user's auctions list for efficient querying
+      // Add to user's auctions list for efficient querying with dynamic status
       const userAuctionRef = ref(rtdb, `users/${user.uid}/auctions/${auctionId}`);
       await set(userAuctionRef, {
         auctionId: auctionId,
         title: formData.title.trim(),
-        status: 'active',
+        status: getAuctionStatus(endTime), // Also update user's auction list with dynamic status
         createdAt: serverTimestamp(),
         endTime: endTime,
         imageCount: imageData.length,

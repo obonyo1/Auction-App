@@ -44,6 +44,31 @@ export default function AuctioneerHome() {
   const [loading, setLoading] = useState<boolean>(true);
   const [refreshing, setRefreshing] = useState<boolean>(false);
 
+  // Function to determine actual status based on current time
+  const getActualStatus = (auction: AuctionItem) => {
+    const now = Date.now();
+    
+    // If auction has ended (time passed), mark as completed
+    if (auction.endTime <= now) {
+      return 'completed';
+    }
+    
+    
+    // Return the database status if auction hasn't ended
+    return auction.status;
+  };
+
+  // Separate auctions into active and ended based on actual status
+  const activeAuctions = myAuctions.filter(auction => {
+    const actualStatus = getActualStatus(auction);
+    return actualStatus === 'active' || actualStatus === 'upcoming';
+  });
+  
+  const endedAuctions = myAuctions.filter(auction => {
+    const actualStatus = getActualStatus(auction);
+    return actualStatus === 'completed';
+  });
+
   const fetchMyAuctions = async () => {
     try {
       const currentUser = auth.currentUser;
@@ -70,7 +95,7 @@ export default function AuctioneerHome() {
               
               // Only include auctions created by current user
               if (auction.auctioneerId === currentUser.uid) {
-                loadedAuctions.push({
+                const auctionItem: AuctionItem = {
                   id: key,
                   title: auction.title || 'Unknown Product',
                   description: auction.description || 'No description',
@@ -81,7 +106,9 @@ export default function AuctioneerHome() {
                   createdAt: auction.createdAt || Date.now(),
                   auctioneerId: auction.auctioneerId,
                   images: auction.imageUrl || ''
-                });
+                };
+
+                loadedAuctions.push(auctionItem);
               }
             });
             
@@ -121,11 +148,18 @@ export default function AuctioneerHome() {
     
     setupListener();
 
+    // Set up interval to update status every minute
+    const statusUpdateInterval = setInterval(() => {
+      // Force re-render to update status badges and positions
+      setMyAuctions(prev => [...prev]);
+    }, 60000); // Update every minute
+
     // Cleanup function
     return () => {
       if (unsubscribe) {
         unsubscribe();
       }
+      clearInterval(statusUpdateInterval);
     };
   }, []);
 
@@ -157,8 +191,9 @@ export default function AuctioneerHome() {
     );
   };
 
-  const getStatusColor = (status: string) => {
-    switch (status) {
+  const getStatusColor = (auction: AuctionItem) => {
+    const actualStatus = getActualStatus(auction);
+    switch (actualStatus) {
       case 'active':
         return '#28a745';
       case 'completed':
@@ -170,8 +205,9 @@ export default function AuctioneerHome() {
     }
   };
 
-  const getStatusText = (status: string) => {
-    switch (status) {
+  const getStatusText = (auction: AuctionItem) => {
+    const actualStatus = getActualStatus(auction);
+    switch (actualStatus) {
       case 'active':
         return 'ACTIVE';
       case 'completed':
@@ -179,7 +215,7 @@ export default function AuctioneerHome() {
       case 'upcoming':
         return 'UPCOMING';
       default:
-        return status.toUpperCase();
+        return actualStatus.toUpperCase();
     }
   };
 
@@ -204,7 +240,7 @@ export default function AuctioneerHome() {
 
   const renderAuctionItem = ({ item }: { item: AuctionItem }) => (
     <TouchableOpacity 
-      style={styles.auctionItem}
+      style={styles.splitAuctionItem}
       onPress={() => {
         // Navigate to auction details
         router.push(`/auctionDetails/${item.id}` as any);
@@ -212,9 +248,9 @@ export default function AuctioneerHome() {
     >
       <View style={styles.auctionContent}>
         <View style={styles.productHeader}>
-          <Text style={styles.productName}>{item.title}</Text>
-          <View style={[styles.statusBadge, { backgroundColor: getStatusColor(item.status) }]}>
-            <Text style={styles.statusText}>{getStatusText(item.status)}</Text>
+          <Text style={styles.productName} numberOfLines={1}>{item.title}</Text>
+          <View style={[styles.statusBadge, { backgroundColor: getStatusColor(item) }]}>
+            <Text style={styles.statusText}>{getStatusText(item)}</Text>
           </View>
         </View>
         <Text style={styles.productDescription} numberOfLines={2}>
@@ -223,11 +259,11 @@ export default function AuctioneerHome() {
         <Text style={styles.timeLeft}>
           {formatTimeLeft(item.endTime)}
         </Text>
-      </View>
-      <View style={styles.priceContainer}>
-        <Text style={styles.priceLabel}>CURRENT BID</Text>
-        <Text style={styles.price}>Ksh {item.currentBid.toLocaleString()}</Text>
-        <Text style={styles.startPrice}>Start: Ksh {item.startingBid.toLocaleString()}</Text>
+        <View style={styles.priceContainer}>
+          <Text style={styles.priceLabel}>CURRENT BID</Text>
+          <Text style={styles.price}>Ksh {item.currentBid.toLocaleString()}</Text>
+          <Text style={styles.startPrice}>Start: Ksh {item.startingBid.toLocaleString()}</Text>
+        </View>
       </View>
     </TouchableOpacity>
   );
@@ -288,7 +324,7 @@ export default function AuctioneerHome() {
           <Text style={styles.placeItemButtonText}>Place item up for auction</Text>
         </TouchableOpacity>
 
-        {/* My Auctions Section */}
+        {/* My Auctions Section with Split Layout */}
         <View style={styles.previousAuctionsSection}>
           <Text style={styles.sectionTitle}>My Auctions</Text>
           
@@ -299,20 +335,51 @@ export default function AuctioneerHome() {
               </Text>
             </View>
           ) : (
-            <FlatList
-              data={myAuctions}
-              renderItem={renderAuctionItem}
-              keyExtractor={(item) => item.id}
-              refreshControl={
-                <RefreshControl
-                  refreshing={refreshing}
-                  onRefresh={onRefresh}
-                  colors={['#007bff']}
+            <View style={styles.splitContainer}>
+              {/* Left Side - Active Auctions */}
+              <View style={styles.leftColumn}>
+                <Text style={styles.columnTitle}>Active ({activeAuctions.length})</Text>
+                <FlatList
+                  data={activeAuctions}
+                  renderItem={renderAuctionItem}
+                  keyExtractor={(item) => item.id}
+                  refreshControl={
+                    <RefreshControl
+                      refreshing={refreshing}
+                      onRefresh={onRefresh}
+                      colors={['#007bff']}
+                    />
+                  }
+                  showsVerticalScrollIndicator={false}
+                  contentContainerStyle={styles.listContainer}
+                  ListEmptyComponent={
+                    <Text style={styles.emptyColumnText}>No active auctions</Text>
+                  }
                 />
-              }
-              showsVerticalScrollIndicator={false}
-              contentContainerStyle={styles.listContainer}
-            />
+              </View>
+
+              {/* Right Side - Ended Auctions */}
+              <View style={styles.rightColumn}>
+                <Text style={styles.columnTitle}>Ended ({endedAuctions.length})</Text>
+                <FlatList
+                  data={endedAuctions}
+                  renderItem={renderAuctionItem}
+                  keyExtractor={(item) => item.id}
+                  refreshControl={
+                    <RefreshControl
+                      refreshing={refreshing}
+                      onRefresh={onRefresh}
+                      colors={['#007bff']}
+                    />
+                  }
+                  showsVerticalScrollIndicator={false}
+                  contentContainerStyle={styles.listContainer}
+                  ListEmptyComponent={
+                    <Text style={styles.emptyColumnText}>No ended auctions</Text>
+                  }
+                />
+              </View>
+            </View>
           )}
         </View>
       </View>
@@ -415,20 +482,51 @@ const styles = StyleSheet.create({
     color: '#333',
     marginBottom: 20,
   },
+  splitContainer: {
+    flex: 1,
+    flexDirection: 'row',
+    gap: 10,
+  },
+  leftColumn: {
+    flex: 1,
+    backgroundColor: '#f8f9fa',
+    borderRadius: 8,
+    padding: 10,
+    marginRight: 5,
+  },
+  rightColumn: {
+    flex: 1,
+    backgroundColor: '#f8f9fa',
+    borderRadius: 8,
+    padding: 10,
+    marginLeft: 5,
+  },
+  columnTitle: {
+    fontSize: 16,
+    fontWeight: 'bold',
+    color: '#333',
+    marginBottom: 10,
+    textAlign: 'center',
+  },
   listContainer: {
     paddingBottom: 20,
   },
-  auctionItem: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'flex-start',
-    paddingVertical: 15,
-    borderBottomWidth: 1,
-    borderBottomColor: '#f0f0f0',
+  splitAuctionItem: {
+    backgroundColor: '#fff',
+    borderRadius: 8,
+    marginBottom: 10,
+    padding: 12,
+    shadowColor: '#000',
+    shadowOffset: {
+      width: 0,
+      height: 1,
+    },
+    shadowOpacity: 0.22,
+    shadowRadius: 2.22,
+    elevation: 3,
   },
   auctionContent: {
     flex: 1,
-    paddingRight: 15,
   },
   productHeader: {
     flexDirection: 'row',
@@ -437,49 +535,50 @@ const styles = StyleSheet.create({
     marginBottom: 5,
   },
   productName: {
-    fontSize: 16,
+    fontSize: 14,
     fontWeight: 'bold',
     color: '#333',
     flex: 1,
   },
   statusBadge: {
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-    borderRadius: 12,
-    marginLeft: 10,
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 10,
+    marginLeft: 8,
   },
   statusText: {
     color: '#fff',
-    fontSize: 10,
+    fontSize: 9,
     fontWeight: 'bold',
   },
   productDescription: {
-    fontSize: 14,
+    fontSize: 12,
     color: '#666',
-    lineHeight: 20,
+    lineHeight: 16,
     marginBottom: 5,
   },
   timeLeft: {
-    fontSize: 12,
+    fontSize: 11,
     color: '#ff6b35',
     fontWeight: '600',
+    marginBottom: 8,
   },
   priceContainer: {
-    alignItems: 'flex-end',
+    alignItems: 'flex-start',
   },
   priceLabel: {
-    fontSize: 12,
+    fontSize: 10,
     color: '#999',
     marginBottom: 2,
   },
   price: {
-    fontSize: 18,
+    fontSize: 14,
     fontWeight: 'bold',
     color: '#007bff',
     marginBottom: 2,
   },
   startPrice: {
-    fontSize: 12,
+    fontSize: 10,
     color: '#666',
   },
   emptyState: {
@@ -491,5 +590,12 @@ const styles = StyleSheet.create({
     color: '#666',
     textAlign: 'center',
     lineHeight: 24,
+  },
+  emptyColumnText: {
+    textAlign: 'center',
+    color: '#999',
+    fontSize: 14,
+    fontStyle: 'italic',
+    marginTop: 20,
   },
 });
