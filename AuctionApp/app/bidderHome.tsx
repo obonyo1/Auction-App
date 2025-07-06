@@ -9,12 +9,23 @@ import {
   ActivityIndicator,
   TextInput,
   Alert,
-  Animated
+  Animated,
+  Platform
 } from 'react-native';
 import { Stack, router } from 'expo-router';
 import { getDatabase, ref, onValue } from 'firebase/database';
 import ConfettiCannon from 'react-native-confetti-cannon';
 import { useAuth } from './context/authContext';
+import * as Notifications from 'expo-notifications';
+
+// Configure notifications
+Notifications.setNotificationHandler({
+  handleNotification: async () => ({
+    shouldShowAlert: true,
+    shouldPlaySound: true,
+    shouldSetBadge: false,
+  }),
+});
 
 type Item = {
   id: string;
@@ -46,8 +57,113 @@ export default function bidderHome() {
   const [filteredItems, setFilteredItems] = useState<Item[]>([]);
   const [wonAuctions, setWonAuctions] = useState<Item[]>([]);
   const [showConfetti, setShowConfetti] = useState(false);
+  const [previousWonCount, setPreviousWonCount] = useState(0);
   const { userId } = useAuth();
   const pulseAnim = useRef(new Animated.Value(1)).current;
+  const notificationListener = useRef<any>();
+  const responseListener = useRef<any>();
+
+  // Request notification permissions
+  useEffect(() => {
+    registerForPushNotificationsAsync();
+
+    // This listener is fired whenever a notification is received while the app is foregrounded
+    notificationListener.current = Notifications.addNotificationReceivedListener(notification => {
+      console.log('Notification received:', notification);
+    });
+
+    // This listener is fired whenever a user taps on or interacts with a notification
+    responseListener.current = Notifications.addNotificationResponseReceivedListener(response => {
+      console.log('Notification response:', response);
+      // Handle notification tap - could navigate to specific auction
+      const data = response.notification.request.content.data;
+      if (data?.auctionId) {
+        router.push(`/auctionDetails?id=${data.auctionId}`);
+      } else if (data?.type === 'checkout') {
+        router.push('/checkout');
+      }
+    });
+
+    return () => {
+      if (notificationListener.current) {
+        Notifications.removeNotificationSubscription(notificationListener.current);
+      }
+      if (responseListener.current) {
+        Notifications.removeNotificationSubscription(responseListener.current);
+      }
+    };
+  }, []);
+
+  // Function to request notification permissions
+  async function registerForPushNotificationsAsync() {
+    let token;
+    
+    if (Platform.OS === 'android') {
+      await Notifications.setNotificationChannelAsync('default', {
+        name: 'default',
+        importance: Notifications.AndroidImportance.MAX,
+        vibrationPattern: [0, 250, 250, 250],
+        lightColor: '#FF231F7C',
+      });
+    }
+
+    const { status: existingStatus } = await Notifications.getPermissionsAsync();
+    let finalStatus = existingStatus;
+    
+    if (existingStatus !== 'granted') {
+      const { status } = await Notifications.requestPermissionsAsync();
+      finalStatus = status;
+    }
+    
+    if (finalStatus !== 'granted') {
+      Alert.alert(
+        'Notification Permission',
+        'Please enable notifications to receive alerts about auctions you win!',
+        [
+          { text: 'Later', style: 'cancel' },
+          { text: 'Settings', onPress: () => Notifications.openSettingsAsync() }
+        ]
+      );
+      return;
+    }
+
+    return token;
+  }
+
+  // Function to send local notification
+  async function sendWinNotification(auction: Item) {
+    await Notifications.scheduleNotificationAsync({
+      content: {
+        title: "🎉 Congratulations!",
+        body: `You won the auction for "${auction.title}"! Complete your payment now.`,
+        data: { 
+          auctionId: auction.id,
+          type: 'win',
+          amount: auction.currentBid 
+        },
+        sound: 'default',
+      },
+      trigger: null, // Send immediately
+    });
+  }
+
+  // Function to send payment reminder
+  async function sendPaymentReminder(unpaidCount: number) {
+    if (unpaidCount > 0) {
+      await Notifications.scheduleNotificationAsync({
+        content: {
+          title: "Payment Reminder",
+          body: `You have ${unpaidCount} unpaid auction${unpaidCount > 1 ? 's' : ''}. Complete your payment to secure your items.`,
+          data: { 
+            type: 'checkout',
+            unpaidCount 
+          },
+          sound: 'default',
+        },
+        trigger: null,
+      });
+    }
+  }
 
   useEffect(() => {
     const db = getDatabase();
@@ -94,23 +210,46 @@ export default function bidderHome() {
           }
         });
 
-        // Check if there are new wins
-        if (newlyWonAuctions.length > wonAuctions.length) {
+        // Check for new wins and send notifications
+        const currentWonCount = newlyWonAuctions.length;
+        if (currentWonCount > previousWonCount && previousWonCount >= 0) {
+          // New auction won
+          const newWins = newlyWonAuctions.slice(previousWonCount);
+          newWins.forEach(auction => {
+            sendWinNotification(auction);
+          });
+          
           setShowConfetti(true);
           setTimeout(() => setShowConfetti(false), 5000);
           triggerPulseAnimation();
         }
 
+        setPreviousWonCount(currentWonCount);
         setWonAuctions(newlyWonAuctions);
         loadedItems.sort((a, b) => a.endTime - b.endTime);
         setItems(loadedItems);
+      } else {
+        setPreviousWonCount(0);
       }
       
       setLoading(false);
     });
 
     return () => unsubscribe();
-  }, [userId]);
+  }, [userId, previousWonCount]);
+
+  // Send payment reminder every 30 minutes for unpaid auctions
+  useEffect(() => {
+    const unpaidCount = wonAuctions.filter(a => !a.paymentInfo?.hasPaid).length;
+    
+    if (unpaidCount > 0) {
+      const reminderInterval = setInterval(() => {
+        sendPaymentReminder(unpaidCount);
+      }, 30 * 60 * 1000); // 30 minutes
+
+      return () => clearInterval(reminderInterval);
+    }
+  }, [wonAuctions]);
 
   const triggerPulseAnimation = () => {
     Animated.sequence([
