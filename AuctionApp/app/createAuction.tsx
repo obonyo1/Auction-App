@@ -336,6 +336,7 @@ export default function CreateAuction() {
       // a cleanup mechanism or transaction-like behavior
       
       Alert.alert('Error', errorMessage);
+
     } finally {
       setLoading(false);
       setUploadProgress(0);
