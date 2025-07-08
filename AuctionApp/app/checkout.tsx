@@ -20,11 +20,7 @@ import {
   getDatabase, 
   ref, 
   onValue, 
-  query, 
-  orderByChild, 
-  equalTo,
-  update,
-  remove
+  update
 } from 'firebase/database';
 
 interface WonAuction {
@@ -53,8 +49,7 @@ interface PaymentModalData {
   title: string;
 }
 
-// M-Pesa Daraja API configuration
-// SECURITY WARNING: These credentials should be moved to a secure backend server
+// IMPORTANT: These credentials should be moved to a secure backend server
 const MPESA_CONFIG = {
   consumerKey: 'esS27JygO5uNE9XdGy1nem1XyrhUeMo8KmvAtfGzrladrngP',
   consumerSecret: '3uY78bYqnE7BuxayL3gtVqz0gASYhfJe7J9o36TPKf04WCqfonTMdFv88s3c9ADN',
@@ -204,7 +199,6 @@ export default function Checkout() {
           setWonAuctions(loadedWonAuctions);
           setLoading(false);
           setRefreshing(false);
-          console.log('Won auctions fetched:', loadedWonAuctions.length);
         },
         (error) => {
           console.error('Realtime Database error:', error);
@@ -297,8 +291,6 @@ export default function Checkout() {
         hiddenAt: Date.now(),
         hiddenBy: currentUser?.id
       });
-      
-      console.log(`Auction ${auctionId} hidden from history`);
     } catch (error) {
       console.error('Error hiding auction from history:', error);
       Alert.alert('Error', 'Failed to remove auction from history. Please try again.');
@@ -367,8 +359,6 @@ export default function Checkout() {
         TransactionDesc: description
       };
 
-      console.log('Initiating M-Pesa STK Push:', requestBody);
-
       const response = await fetch(`${MPESA_CONFIG.baseUrl}/mpesa/stkpush/v1/processrequest`, {
         method: 'POST',
         headers: {
@@ -378,18 +368,7 @@ export default function Checkout() {
         body: JSON.stringify(requestBody)
       });
 
-      const responseText = await response.text();
-      console.log('M-Pesa STK Push Response:', responseText);
-
-      let result;
-      try {
-        result = JSON.parse(responseText);
-      } catch (parseError) {
-        console.error('Error parsing response:', parseError);
-        throw new Error('Invalid response format from M-Pesa service');
-      }
-
-      console.log('Parsed M-Pesa Response:', result);
+      const result = await response.json();
 
       if (response.ok && result.ResponseCode === '0') {
         // Payment request sent successfully
@@ -467,18 +446,7 @@ export default function Checkout() {
           body: JSON.stringify(queryBody)
         });
 
-        const responseText = await response.text();
-        console.log('Payment status check response:', responseText);
-
-        let result;
-        try {
-          result = JSON.parse(responseText);
-        } catch (parseError) {
-          console.error('Error parsing status response:', parseError);
-          return;
-        }
-
-        console.log('Parsed payment status:', result);
+        const result = await response.json();
 
         // Check for successful payment
         if (result.ResultCode === '0') {
@@ -918,6 +886,10 @@ const styles = StyleSheet.create({
     color: '#333',
     flex: 1,
   },
+  statusAndActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
   statusBadge: {
     paddingHorizontal: 8,
     paddingVertical: 4,
@@ -928,6 +900,24 @@ const styles = StyleSheet.create({
     color: '#fff',
     fontSize: 10,
     fontWeight: 'bold',
+  },
+  deleteButton: {
+    backgroundColor: '#dc3545',
+    width: 24,
+    height: 24,
+    borderRadius: 12,
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginLeft: 8,
+  },
+  deletingButton: {
+    backgroundColor: '#a02835',
+  },
+  deleteButtonText: {
+    color: '#fff',
+    fontSize: 18,
+    fontWeight: 'bold',
+    marginTop: -2,
   },
   productDescription: {
     fontSize: 14,
