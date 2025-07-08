@@ -33,7 +33,7 @@ type Bid = {
 type AuctionDetails = {
   id: string;
   title: string;
-  images: string;
+  images: string | string[] | any; // More flexible image handling
   description: string;
   startingBid: number;
   currentBid: number;
@@ -62,6 +62,86 @@ export default function AuctionDetailsPage() {
   const [placingBid, setPlacingBid] = useState(false);
   const [timeLeft, setTimeLeft] = useState('');
   const [currentUser, setCurrentUser] = useState<CurrentUser | null>(null);
+  const [auctionStatus, setAuctionStatus] = useState('active');
+
+  // Helper function to determine current status
+  const getCurrentAuctionStatus = (endTime: number) => {
+    return Date.now() >= endTime ? 'completed' : 'active';
+  };
+
+  // Function to update auction status in Firebase
+  const updateAuctionStatusInFirebase = async (auctionId: string, newStatus: string) => {
+    try {
+      const db = getDatabase();
+      const auctionStatusRef = ref(db, `auctions/${auctionId}/status`);
+      await set(auctionStatusRef, newStatus);
+      console.log(`Auction ${auctionId} status updated to: ${newStatus}`);
+    } catch (error) {
+      console.error('Error updating auction status:', error);
+    }
+  };
+
+  // Updated function to handle flexible image formats
+  const getDisplayImage = (imageData: string | string[] | any) => {
+    // Handle null, undefined, or empty cases
+    if (!imageData) {
+      return null;
+    }
+    
+    // If it's a string (single image URL), return it directly
+    if (typeof imageData === 'string' && imageData.trim().length > 0) {
+      return imageData;
+    }
+    
+    // If it's an array, process the first element
+    if (Array.isArray(imageData) && imageData.length > 0) {
+      const firstImage = imageData[0];
+      
+      // Handle null or undefined entries
+      if (!firstImage) {
+        return null;
+      }
+      
+      // Handle ImgBB object format
+      if (typeof firstImage === 'object' && 
+          firstImage !== null && 
+          !Array.isArray(firstImage) && 
+          ('url' in firstImage || 'displayUrl' in firstImage || 'thumbUrl' in firstImage)) {
+        
+        // Prefer displayUrl for better quality, fallback to url, then thumbUrl
+        const imageUrl = firstImage.displayUrl || firstImage.url || firstImage.thumbUrl;
+        
+        // Ensure we're returning a string, not another object
+        if (typeof imageUrl === 'string' && imageUrl.trim().length > 0) {
+          return imageUrl;
+        }
+        
+        return null;
+      }
+      
+      // Handle legacy string format in array
+      if (typeof firstImage === 'string' && firstImage.trim().length > 0) {
+        return firstImage;
+      }
+    }
+    
+    // Handle single ImgBB object (not in array)
+    if (typeof imageData === 'object' && 
+        imageData !== null && 
+        !Array.isArray(imageData) && 
+        ('url' in imageData || 'displayUrl' in imageData || 'thumbUrl' in imageData)) {
+      
+      const imageUrl = imageData.displayUrl || imageData.url || imageData.thumbUrl;
+      
+      if (typeof imageUrl === 'string' && imageUrl.trim().length > 0) {
+        return imageUrl;
+      }
+    }
+    
+    // If we get here, the data format is unexpected
+    console.warn('Unexpected image format:', imageData);
+    return null;
+  };
 
   // Firebase Auth listener
   useEffect(() => {
@@ -129,6 +209,19 @@ export default function AuctionDetailsPage() {
     };
   }, [id]);
 
+  // Effect to initialize status when auction loads
+  useEffect(() => {
+    if (auction) {
+      const currentStatus = getCurrentAuctionStatus(auction.endTime);
+      setAuctionStatus(currentStatus);
+      
+      // If the auction status in Firebase doesn't match current status, update it
+      if (auction.status !== currentStatus) {
+        updateAuctionStatusInFirebase(auction.id, currentStatus);
+      }
+    }
+  }, [auction]);
+
   // Update time left every second
   useEffect(() => {
     if (!auction) return;
@@ -137,8 +230,14 @@ export default function AuctionDetailsPage() {
       const now = Date.now();
       const timeRemaining = auction.endTime - now;
       
+      // Update auction status based on time remaining
+      const currentStatus = getCurrentAuctionStatus(auction.endTime);
+      setAuctionStatus(currentStatus);
+      
       if (timeRemaining <= 0) {
         setTimeLeft('Auction Ended');
+        // Update the auction status in Firebase when it ends
+        updateAuctionStatusInFirebase(auction.id, 'completed');
         return;
       }
       
@@ -173,6 +272,13 @@ export default function AuctionDetailsPage() {
       return;
     }
 
+    // Check if auction is still active based on current time
+    const currentStatus = getCurrentAuctionStatus(auction.endTime);
+    if (currentStatus === 'completed') {
+      Alert.alert('Auction Ended', 'This auction has already ended');
+      return;
+    }
+
     const bidValue = parseFloat(bidAmount);
     
     if (isNaN(bidValue) || bidValue <= auction.currentBid) {
@@ -182,11 +288,6 @@ export default function AuctionDetailsPage() {
 
     if (bidValue < auction.currentBid + 100) {
       Alert.alert('Bid Too Low', 'Minimum bid increment is Ksh 100');
-      return;
-    }
-
-    if (auction.endTime <= Date.now()) {
-      Alert.alert('Auction Ended', 'This auction has already ended');
       return;
     }
 
@@ -259,7 +360,8 @@ export default function AuctionDetailsPage() {
     );
   }
 
-  const isAuctionActive = auction.status === 'active' && auction.endTime > Date.now();
+  const isAuctionActive = auctionStatus === 'active' && auction && auction.endTime > Date.now();
+  const displayImage = getDisplayImage(auction.images);
 
   return (
     <>
@@ -269,11 +371,12 @@ export default function AuctionDetailsPage() {
       }} />
       <ScrollView style={styles.container}>
         {/* Main Image */}
-        {auction.images? (
+        {displayImage ? (
           <Image 
-            source={{ uri: auction.images}} 
+            source={{ uri: displayImage }} 
             style={styles.mainImage}
             resizeMode="cover"
+            onError={(error) => console.log('Image failed to load:', displayImage, error.nativeEvent.error)}
           />
         ) : (
           <View style={styles.placeholderImage}>
@@ -307,7 +410,7 @@ export default function AuctionDetailsPage() {
               {timeLeft}
             </Text>
             <Text style={styles.auctionStatus}>
-              Status: {auction.status === 'active' ? 'Active' : 'Ended'}
+              Status: {auctionStatus === 'active' ? 'Active' : 'Completed'}
             </Text>
           </View>
         </View>
