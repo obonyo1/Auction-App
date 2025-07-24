@@ -37,6 +37,8 @@ The application addresses the specific needs of the Kenyan auction market by com
 🔐 Authentication Screens
 Login Screen
 Email/password authentication with role-based access for admins, auctioneers, and bidders using Firebase Auth. Clean interface with password recovery and validation features for secure platform entry.
+
+
 ![WhatsApp Image 2025-07-24 at 09 05 02 (1)](https://github.com/user-attachments/assets/9a36197f-5854-4afb-a449-18f3f36d2b0b)
 ![WhatsApp Image 2025-07-24 at 09 05 02](https://github.com/user-attachments/assets/cbeddf94-28e1-44ac-af33-78a30f435e3b)
 ![WhatsApp Image 2025-07-24 at 09 05 01 (1)](https://github.com/user-attachments/assets/caf19928-f758-47f5-bf09-2cebc15fe236)
